@@ -1,0 +1,132 @@
+{
+  "Tokyo": {
+    "city": "Tokyo",
+    "country": "Japan",
+    "best_for": ["food", "culture", "shopping", "nightlife"],
+    "seasonal_notes": "April offers mild spring weather and comfortable sightseeing conditions.",
+    "base_currency": "JPY",
+    "transport_hints": ["Use the Tokyo Metro for efficient city transit.", "Shinkansen is best for intercity travel."],
+    "attractions": [
+      {
+        "name": "Shibuya Crossing",
+        "category": "landmark",
+        "location": "Shibuya",
+        "price_estimate": 0,
+        "tags": ["culture", "nightlife"],
+        "description": "World-famous pedestrian crossing and energetic urban atmosphere."
+      },
+      {
+        "name": "Senso-ji Temple",
+        "category": "temple",
+        "location": "Asakusa",
+        "price_estimate": 500,
+        "tags": ["culture", "history"],
+        "description": "Historic temple district with traditional shopping streets and architecture."
+      },
+      {
+        "name": "Tsukiji Outer Market",
+        "category": "food",
+        "location": "Ginza",
+        "price_estimate": 1500,
+        "tags": ["food"],
+        "description": "Well-known market for sushi, snacks, and local food experiences."
+      },
+      {
+        "name": "Meiji Shrine",
+        "category": "park",
+        "location": "Harajuku",
+        "price_estimate": 0,
+        "tags": ["culture", "nature"],
+        "description": "Large shrine complex surrounded by forest and a calm urban escape."
+      }
+    ],
+    "hotels": [
+      {
+        "name": "Shibuya Central Hotel",
+        "area": "Shibuya",
+        "nightly_rate": 145,
+        "amenities": ["wifi", "breakfast", "near transit"],
+        "typical_trip_match": "Great for city access and nightlife."
+      },
+      {
+        "name": "Asakusa Riverside Inn",
+        "area": "Asakusa",
+        "nightly_rate": 110,
+        "amenities": ["wifi", "traditional vibe", "quiet area"],
+        "typical_trip_match": "Well-suited for culture-focused itineraries."
+      },
+      {
+        "name": "Ginza Budget Suites",
+        "area": "Ginza",
+        "nightly_rate": 185,
+        "amenities": ["wifi", "gym", "airport transfer"],
+        "typical_trip_match": "Balances convenience and comfort for short stays."
+      }
+    ]
+  },
+  "Kyoto": {
+    "city": "Kyoto",
+    "country": "Japan",
+    "best_for": ["culture", "history", "food", "temples"],
+    "seasonal_notes": "Spring is ideal for cherry blossoms, while autumn offers crisp weather and foliage.",
+    "base_currency": "JPY",
+    "transport_hints": ["Use city buses and the Keihan line for efficient travel."],
+    "attractions": [
+      {
+        "name": "Fushimi Inari Taisha",
+        "category": "temple",
+        "location": "Fushimi",
+        "price_estimate": 0,
+        "tags": ["culture", "hiking"],
+        "description": "Famous trails of red torii gates leading up the mountain."
+      },
+      {
+        "name": "Kiyomizu-dera",
+        "category": "temple",
+        "location": "Higashiyama",
+        "price_estimate": 500,
+        "tags": ["culture", "history"],
+        "description": "Crowded but iconic temple with a dramatic hillside view."
+      },
+      {
+        "name": "Gion District",
+        "category": "neighborhood",
+        "location": "Gion",
+        "price_estimate": 1000,
+        "tags": ["food", "culture"],
+        "description": "Historic district known for traditional machiya houses and tea houses."
+      },
+      {
+        "name": "Arashiyama Bamboo Grove",
+        "category": "nature",
+        "location": "Arashiyama",
+        "price_estimate": 0,
+        "tags": ["nature", "culture"],
+        "description": "Popular bamboo forest walk that pairs well with riverside views."
+      }
+    ],
+    "hotels": [
+      {
+        "name": "Kamo River Guesthouse",
+        "area": "Downtown Kyoto",
+        "nightly_rate": 95,
+        "amenities": ["wifi", "breakfast", "quiet rooms"],
+        "typical_trip_match": "Good for budget-conscious cultural stays."
+      },
+      {
+        "name": "Gion Cultural Suites",
+        "area": "Gion",
+        "nightly_rate": 170,
+        "amenities": ["wifi", "onsen", "traditional decor"],
+        "typical_trip_match": "Fits travelers prioritizing atmosphere and location."
+      },
+      {
+        "name": "Arashiyama Heights",
+        "area": "Arashiyama",
+        "nightly_rate": 150,
+        "amenities": ["wifi", "breakfast", "scenic view"],
+        "typical_trip_match": "Great when pairing nature and temple visits."
+      }
+    ]
+  }
+}
