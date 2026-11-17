@@ -16,8 +16,8 @@ mcp = MCPServer("destination")
 
 @mcp.tool()
 def search_attractions(destination: str,
-  interests: list[str] | None,
-  limit: int) -> list[dict[str, Any]]:
+  interests: list[str] | None = None,
+  limit: int = 5) -> list[dict[str, Any]]:
 
     attractions = get_attractions(destination=destination, interests=interests, limit=limit)
     return attractions
