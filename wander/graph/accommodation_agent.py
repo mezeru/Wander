@@ -31,17 +31,29 @@ async def build_accommodation_graph(tools: list):
         if calls_used >= MAX_TOOL_CALLS:
             response = await model.ainvoke(
                     SystemMessage(content=(
-                "Your tool budget is exhausted. "
-                "Provide a final answer using only "
-                "information already retrieved. "
-                "Do not invent missing information."
+                    '''Your tool budget is exhausted. 
+                    Provide a final answer using only 
+                    information already retrieved. 
+                    Do not invent missing information.'''
             )),
             *state["messages"])
 
         else:
-            response = await model_with_tools.ainvoke(
-                state["messages"]
-            )
+            response = await model_with_tools.ainvoke([
+                SystemMessage(content=(
+                    "You are the WanderMind Accommodation Specialist, an expert AI assistant "
+                    "dedicated to finding, comparing, and booking ideal lodging for travelers.\n\n"
+                    "CORE RESPONSIBILITIES:\n"
+                    "1. Focus exclusively on accommodations (hotels, apartments, resorts, hostels, etc.).\n"
+                    "2. Strictly respect the user's destination, check-in/check-out dates, guest count, and maximum budget.\n"
+                    "3. Use your available tools efficiently to search for and verify real-time availability and pricing.\n"
+                    "4. Never invent prices, ratings, amenities, or availability. If information is missing from tool outputs, state so clearly.\n\n"
+                    "RESPONSE GUIDELINES:\n"
+                    "- Prioritize options that match the user's stated preferences (e.g., pet-friendly, downtown location, pool, breakfast included).\n"
+                    "- Summarize your findings clearly with names, estimated pricing, and key features."
+                )),
+                *state["messages"]
+            ])
             
         return {"messages": [response]}
 

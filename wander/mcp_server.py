@@ -28,19 +28,17 @@ def destination_guide(destination: str) -> dict[str, Any]:
     info = get_destination_info(destination=destination)
     return json.dumps(info, indent=2)
 
-@mcp.tool()
-def search_hotels(destination: str, start_date, end_date):
-    hotels = {
-        "Hilton":{
-            "rating":4.5,
-            "price": 200,
-            "location": destination,
-            "start_date": start_date,
-            "end_date": end_date
-        }
-    }
-
-    return hotels
+@mcp.tool(name="search_hotels")
+def search_hotels_tool(
+    destination: str,
+    check_in: str,
+    check_out: str,
+    budget: float,
+    limit: int = 5
+) -> list[dict[str, Any]]:
+    return search_hotels(
+        destination, check_in, check_out, budget, limit
+    )
 
 @mcp.prompt()
 def trip_planning_prompt(
