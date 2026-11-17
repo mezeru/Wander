@@ -15,11 +15,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, interrupt
+from langgraph.types import Command, interrupt, Send
 from pydantic import BaseModel, Field
 
 from .accommodation_agent import build_accommodation_graph
 from .activities_graph import build_activities_graph
+import operator
+from typing import Annotated, NotRequired
 
 
 MAX_PLAN_ATTEMPTS = 3
@@ -28,8 +30,12 @@ MODEL_NAME = "qwen3:4b"
 
 
 class ResearchTasks(BaseModel):
-    activities_task: str = Field(description="Instructions for the Activities Agent")
-    accommodation_task: str = Field(description="Instructions for the Accommodation Agent")
+    activities_task: str | None = Field(
+        default=None, description="Instructions for the Activities Agent"
+    )
+    accommodation_task: str | None = Field(
+        default=None, description="Instructions for the Accommodation Agent"
+    )
     tool_arguments: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
         description="Arguments grouped by MCP tool name; omit unknown values.",
@@ -41,12 +47,16 @@ class ValidationResult(BaseModel):
     status: Literal["verified", "needs_revision"]
 
 
+class ResearchWorkerState(TypedDict):
+    agent: Literal["activities", "accommodation"]
+    task: str
+    arguments: dict[str, Any]
+
+
 class TripState(TypedDict):
     user_request: str
     activities_task: NotRequired[str]
     accommodation_task: NotRequired[str]
-    activities_result: NotRequired[str]
-    accommodation_result: NotRequired[str]
     tool_arguments: NotRequired[dict[str, dict[str, Any]]]
     user_context: NotRequired[dict[str, dict[str, Any]]]
     missing_details: NotRequired[list[dict[str, str]]]
@@ -56,6 +66,10 @@ class TripState(TypedDict):
     plan_attempts: NotRequired[int]
     issues: NotRequired[list[str]]
     status: NotRequired[Literal["pending", "needs_input", "verified", "needs_revision"]]
+    research_results: Annotated[
+        list[dict[str, Any]],
+        operator.add
+    ]
 
 
 def tool_schema(tool: Any) -> dict[str, Any]:
@@ -265,13 +279,27 @@ async def main() -> None:
             explicit_context = state.get("user_context", {})
             response = await coordinator_model.ainvoke([
                 SystemMessage(content=(
-                    "You coordinate WanderMind research. Create an activities task and an accommodation task. "
-                    "Fill tool_arguments using the EXACT parameter names in the discovered schemas. "
-                    "Extract all explicitly stated destinations, dates, interests, and NIGHTLY hotel budgets. "
-                    "A total trip budget is NOT a nightly hotel budget. If that is all the user provided, "
-                    "omit search_hotels.budget and ask for a nightly amount. "
-                    "Never guess dates, guests, budget, or availability. Omit values you do not know. "
-                    "Use user corrections as authoritative. Keep specialist tasks consistent with the details."
+                    """
+                    You are WanderMind's Trip Coordinator.
+
+                    Analyze the user's request and select only the
+                    specialist agents necessary to fulfill it.
+
+                    Available specialists:
+                    - activities: Attractions, sightseeing, experiences
+                    - accommodation: Hotels and places to stay
+
+                    Rules:
+                    1. Generate an activities_task only if activity
+                    research is required.
+                    2. Generate an accommodation_task only if hotel
+                    research is required.
+                    3. Set unused tasks to null.
+                    4. Extract tool arguments from the user's request.
+                    5. Never invent missing information.
+                    6. Treat user clarifications as authoritative.
+                    7. Only include arguments for selected tools.
+                    """
                 )),
                 HumanMessage(content=(
                     f"Original request:\n{state['user_request']}\n\n"
@@ -301,16 +329,35 @@ async def main() -> None:
                 "tool_arguments": args,
             }
 
-        def requirements_check(state: TripState) -> dict[str, Any]:
+        def requirements_check(state: TripState):
+            selected_schemas = {}
+
+            if state.get("activities_task"):
+                selected_schemas["search_attractions"] = (
+                    schemas["search_attractions"]
+                )
+
+            if state.get("accommodation_task"):
+                selected_schemas["search_hotels"] = (
+                    schemas["search_hotels"]
+                )
+
             checked, issues = validate_arguments(
                 state.get("tool_arguments", {}),
-                schemas,
+                selected_schemas,
                 state["user_request"],
                 state.get("user_context", {}),
-                state.get("input_errors", []),
+                state.get("input_errors", [])
             )
-            return {"tool_arguments": checked, "missing_details": issues}
 
+            return {
+                "tool_arguments": {
+                    **state.get("tool_arguments", {}),
+                    **checked
+                },
+                "missing_details": issues
+            }
+        
         def ask_user(state: TripState) -> dict[str, Any]:
             answers = interrupt({
                 "type": "missing_details",
@@ -402,8 +449,9 @@ async def main() -> None:
                 HumanMessage(content=(
                     f"Original request:\n{state['user_request']}\n\n"
                     f"Validated arguments:\n{json.dumps(state['tool_arguments'])}\n\n"
-                    f"Activities research:\n{state['activities_result']}\n\n"
-                    f"Accommodation research:\n{state['accommodation_result']}"
+                    f'''Research results:
+                        {json.dumps(state["research_results"], indent=2)}
+                    '''
                 )),
             ]
             if state.get("issues"):
@@ -430,20 +478,92 @@ async def main() -> None:
                 HumanMessage(content=(
                     f"Request:\n{state['user_request']}\n\n"
                     f"Validated arguments:\n{json.dumps(state['tool_arguments'])}\n\n"
-                    f"Activities research:\n{state['activities_result']}\n\n"
-                    f"Accommodation research:\n{state['accommodation_result']}\n\n"
+                    f'''Research results:
+                        {json.dumps(state["research_results"], indent=2)}
+                    '''
                     f"Final plan:\n{state['final_plan']}"
                 )),
             ])
             return {"issues": result.issues, "status": result.status}
 
+        def dispatch_research(state: TripState):
+            sends = []
+
+            if(state.get("activities_task")):
+                sends.append(
+                     Send("research_worker", {
+                        "agent": "activities",
+                        "task": state["activities_task"],
+                        "arguments": state.get(
+                            "tool_arguments", {}
+                        ).get("search_attractions", {})
+                    })
+                )
+
+            if state.get("accommodation_task"):
+                sends.append(
+                    Send("research_worker", {
+                        "agent": "accommodation",
+                        "task": state["accommodation_task"],
+                        "arguments": state.get(
+                            "tool_arguments", {}
+                        ).get("search_hotels", {})
+                    })
+                )
+            return sends
+                
+        async def research_worker(state: ResearchWorkerState):
+            agent_name = state["agent"]
+
+            if agent_name == "activities":
+                graph = activities_graph
+
+            elif agent_name == "accommodation":
+                graph = accommodation_graph
+
+            else:
+                raise ValueError(
+                    f"Unknown research agent: {agent_name}"
+                )
+
+            result = await graph.ainvoke({
+                "messages": [{
+                    "role": "user",
+                    "content": (
+                        f"{state['task']}\n\n"
+                        f"Research arguments:\n"
+                        f"{state['arguments']}"
+                    )
+                }]
+            })
+
+            return {
+                "research_results": [{
+                    "agent": agent_name,
+                    "result": result["messages"][-1].content
+                }]
+            }
+
+        def route_agents(state: TripState):
+            return {
+
+            }
+
         def route_requirements(state: TripState) -> str:
+            if (
+                not state.get("activities_task")
+                and not state.get("accommodation_task")
+            ):
+                return "needs_input"
+
             if not state.get("missing_details"):
-                return "activities"
+                return "route_agents"
+
             if state.get("clarification_rounds", 0) >= MAX_CLARIFICATION_ROUNDS:
                 return "needs_input"
-            return "ask_user"
 
+            return "ask_user"
+    
         def route_review(state: TripState) -> str:
             if state.get("status") == "verified" and not state.get("issues"):
                 return "__end__"
@@ -455,21 +575,30 @@ async def main() -> None:
         workflow = StateGraph(TripState)
         workflow.add_node("coordinator", coordinator)
         workflow.add_node("requirements_check", requirements_check)
+        workflow.add_node("route_agents", route_agents)
+        workflow.add_node("research_worker",research_worker)
         workflow.add_node("ask_user", ask_user)
         workflow.add_node("needs_input", needs_input)
         workflow.add_node("activities", activities)
         workflow.add_node("accommodation", accommodation)
         workflow.add_node("final_planner", final_planner)
         workflow.add_node("validate_final", validate_final)
+
         workflow.add_edge(START, "coordinator")
         workflow.add_edge("coordinator", "requirements_check")
         workflow.add_conditional_edges("requirements_check", route_requirements, {
-            "ask_user": "ask_user", "activities": "activities", "needs_input": "needs_input"
+            "ask_user": "ask_user",  "route_agents": "route_agents", "needs_input": "needs_input"
         })
+
+        workflow.add_conditional_edges(
+            "route_agents",
+            dispatch_research,
+            ["research_worker"]
+        )
+
         workflow.add_edge("ask_user", "coordinator")
         workflow.add_edge("needs_input", END)
-        workflow.add_edge("activities", "accommodation")
-        workflow.add_edge("accommodation", "final_planner")
+        workflow.add_edge( "research_worker", "final_planner")
         workflow.add_edge("final_planner", "validate_final")
         workflow.add_conditional_edges("validate_final", route_review, {
             "__end__": END, "review_again": "final_planner"
