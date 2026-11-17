@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-
-
 from wander.travel_data import (
     get_destination_info,
     get_travel_times,
@@ -12,8 +10,8 @@ from wander.travel_data import (
     get_attractions
 )
 
-from mcp.server.fastmcp import FastMCP
-mcp = FastMCP("destination")
+from mcp.server.mcpserver import MCPServer
+mcp = MCPServer("destination")
 
 
 @mcp.tool()
@@ -29,6 +27,20 @@ def search_attractions(destination: str,
 def destination_guide(destination: str) -> dict[str, Any]:
     info = get_destination_info(destination=destination)
     return json.dumps(info, indent=2)
+
+@mcp.tool()
+def search_hotels(destination: str, start_date, end_date):
+    hotels = {
+        "Hilton":{
+            "rating":4.5,
+            "price": 200,
+            "location": destination,
+            "start_date": start_date,
+            "end_date": end_date
+        }
+    }
+
+    return hotels
 
 @mcp.prompt()
 def trip_planning_prompt(
