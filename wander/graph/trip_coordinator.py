@@ -103,22 +103,27 @@ async def main():
             }
 
         async def final_planner(state: TripState):
-            # TODO 1: Get the original user request
+            response = await model.ainvoke([
+                SystemMessage(content=(
+                    "You are a travel itinerary planner. "
+                    "Combine the research into a practical trip. "
+                    "Respect the user's dates and budget. "
+                    "Do not invent availability or prices. "
+                    "Clearly label all mock estimates."
+                )),
+                HumanMessage(content=f"""
+        Original request:
+        {state["user_request"]}
 
-            # TODO 2: Get activities_result
+        Activities research:
+        {state["activities_result"]}
 
-            # TODO 3: Get accommodation_result
+        Accommodation research:
+        {state["accommodation_result"]}
+        """)
+            ])
 
-            # TODO 4: Ask the LLM to combine the results
-            # into a practical itinerary.
-
-            # TODO 5: Do not invent missing travel information.
-            # Label all mock prices and availability clearly.
-
-            # TODO 6: Return:
-            # {"final_plan": response.content}
-
-            pass
+            return {"final_plan": response.content}
 
 
 
