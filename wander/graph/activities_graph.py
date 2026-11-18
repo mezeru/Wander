@@ -1,5 +1,6 @@
 
 import asyncio
+import logging
 from pathlib import Path
 
 from langchain.mcp import MCPAdapter
@@ -7,6 +8,11 @@ from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_core.messages import ToolMessage, SystemMessage
+
+from .logging import log_node
+
+
+logger = logging.getLogger(__name__)
 
 
 async def build_activities_graph(tools: list):
@@ -60,16 +66,22 @@ async def build_activities_graph(tools: list):
             
         return {"messages": [response]}
 
+    def route_assistant(state: MessagesState) -> str:
+        destination = tools_condition(state)
+        logger.info("Workflow route: activities.assistant -> %s", destination)
+        return destination
+
     graph = StateGraph(MessagesState)
 
-    graph.add_node("assistant", assistant)
-    graph.add_node("tools", ToolNode(tools))
+    tool_node = ToolNode(tools)
+    graph.add_node("assistant", log_node("activities.assistant", assistant))
+    graph.add_node("tools", log_node("activities.tools", tool_node.ainvoke))
 
     graph.add_edge(START, "assistant")
 
     graph.add_conditional_edges(
         "assistant",
-        tools_condition,
+        route_assistant,
         {
             "tools": "tools",
             "__end__": END
