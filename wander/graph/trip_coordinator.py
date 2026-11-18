@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from .accommodation_agent import build_accommodation_graph
 from .activities_graph import build_activities_graph
+from .logging import log_node
 import operator
 from typing import Annotated, NotRequired
 
@@ -27,6 +29,7 @@ from typing import Annotated, NotRequired
 MAX_PLAN_ATTEMPTS = 3
 MAX_CLARIFICATION_ROUNDS = 5
 MODEL_NAME = "qwen3:4b"
+logger = logging.getLogger(__name__)
 
 
 class ResearchTasks(BaseModel):
@@ -40,7 +43,32 @@ class ResearchTasks(BaseModel):
         default_factory=dict,
         description="Arguments grouped by MCP tool name; omit unknown values.",
     )
+    destination: str | None = Field(
+        default=None,
+        description=(
+            "The explicitly specified travel destination. "
+            "For example, 'Plan a 3-day Kyoto trip' means "
+            "destination='Kyoto'. Must not be null if one "
+            "unambiguous destination appears in the request."
+        )
+    )
 
+class TripIntent(BaseModel):
+    destinations: list[str] = Field(
+        description=(
+            "All destinations the user wants to visit. "
+            "Extract place names regardless of whether "
+            "they exist in the travel database."
+        )
+    )
+
+    trip_days: int | None = None
+
+    needs_activities: bool
+    needs_accommodation: bool
+
+    nightly_hotel_budget: float | None = None
+    
 
 class ValidationResult(BaseModel):
     issues: list[str] = Field(default_factory=list)
@@ -70,6 +98,7 @@ class TripState(TypedDict):
         list[dict[str, Any]],
         operator.add
     ]
+    trip_intent: TripIntent
 
 
 def tool_schema(tool: Any) -> dict[str, Any]:
@@ -80,6 +109,9 @@ def tool_schema(tool: Any) -> dict[str, Any]:
 
 def missing(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
+
+
+
 
 
 def parse_date(value: Any) -> str:
@@ -187,6 +219,18 @@ def issue(tool: str, field: str, description: str) -> dict[str, str]:
     return {"tool": tool, "field": field, "description": description}
 
 
+def clean_task(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    cleaned = value.strip()
+
+    if cleaned.lower() in {"null", "none", ""}:
+        return None
+
+    return cleaned
+
+
 def dedupe_issues(items: list[dict[str, str]]) -> list[dict[str, str]]:
     by_key: dict[tuple[str, str], dict[str, str]] = {}
     for item in items:
@@ -246,6 +290,38 @@ async def main() -> None:
     model = ChatOllama(model=MODEL_NAME, temperature=0)
     coordinator_model = model.with_structured_output(ResearchTasks)
     validator_model = model.with_structured_output(ValidationResult)
+    intent_model = model.with_structured_output(
+        TripIntent,
+        method="json_schema"
+    )
+
+    async def extract_trip_intent(state: TripState):
+        result = await intent_model.ainvoke([
+            SystemMessage(content="""
+            You extract travel requirements from user requests.
+
+            Return every destination explicitly mentioned.
+            Never restrict destinations to a known dataset.
+
+            For complete trip planning, both activities
+            and accommodation research are normally needed.
+
+            Never invent missing dates or budgets.
+
+            Examples:
+            "Plan a 3-day Kyoto trip"
+            -> destinations: ["Kyoto"]
+
+            "Visit Tokyo, Kyoto and Osaka"
+            -> destinations: ["Tokyo", "Kyoto", "Osaka"]
+
+            "Find hotels in Ljubljana"
+            -> destinations: ["Ljubljana"]
+            """),
+            HumanMessage(content=state["user_request"])
+        ])
+
+        return {"trip_intent": result.model_dump()}
 
     # Langfuse is optional; tracing should not block local experiments.
     callbacks: list[Any] = []
@@ -278,39 +354,99 @@ async def main() -> None:
         async def coordinator(state: TripState) -> dict[str, Any]:
             explicit_context = state.get("user_context", {})
             response = await coordinator_model.ainvoke([
-                SystemMessage(content=(
-                    """
+                SystemMessage(content="""
                     You are WanderMind's Trip Coordinator.
 
-                    Analyze the user's request and select only the
-                    specialist agents necessary to fulfill it.
+                    Your responsibility is to decide which specialist
+                    agents are needed to fulfill the user's request.
 
-                    Available specialists:
-                    - activities: Attractions, sightseeing, experiences
-                    - accommodation: Hotels and places to stay
+                    Available agents:
 
-                    Rules:
-                    1. Generate an activities_task only if activity
-                    research is required.
-                    2. Generate an accommodation_task only if hotel
-                    research is required.
-                    3. Set unused tasks to null.
-                    4. Extract tool arguments from the user's request.
-                    5. Never invent missing information.
-                    6. Treat user clarifications as authoritative.
-                    7. Only include arguments for selected tools.
-                    """
-                )),
+                    1. activities:
+                    Researches attractions, sightseeing, experiences,
+                    and activities.
+
+                    2. accommodation:
+                    Researches hotels and places to stay.
+
+                    TASK SELECTION RULES:
+
+                    - If the user requests a complete trip, vacation,
+                    or travel itinerary, select BOTH agents.
+
+                    - If the user only asks about attractions or
+                    experiences, select ONLY activities.
+
+                    - If the user only asks about hotels or
+                    accommodation, select ONLY accommodation.
+
+                    - Set unused tasks to null.
+
+                    IMPORTANT:
+                    - Missing tool arguments do NOT mean an agent
+                    should be skipped.
+                    - For example, if hotel dates are missing,
+                    still create the accommodation task.
+                    - The Requirements Check node will request
+                    missing details from the user.
+
+                    - Never invent dates, budgets, or destinations.
+                    - Preserve explicit user corrections.
+                    - Only return both tasks as null when the user
+                    request is unrelated to available specialists.
+
+                    EXAMPLES:
+
+                    User: "Plan a 3-day Kyoto trip"
+                    activities_task: "Research attractions in Kyoto"
+                    accommodation_task: "Research hotels in Kyoto"
+
+                    User: "Find temples in Kyoto"
+                    activities_task: "Research temples in Kyoto"
+                    accommodation_task: null
+
+                    User: "Find hotels in Osaka"
+                    activities_task: null
+                    accommodation_task: "Research hotels in Osaka"
+                    """),
                 HumanMessage(content=(
                     f"Original request:\n{state['user_request']}\n\n"
                     f"Latest validated user clarifications:\n{json.dumps(explicit_context)}\n\n"
+                    f"Trip Intent: {state["trip_intent"]}"
                     f"Available tools:\n{json.dumps(tool_specs)}"
                 )),
             ])
+
+            logger.info(
+                "Coordinator structured output:\n%s",
+                response.model_dump_json(indent=2)
+            )
+
             if not isinstance(response, ResearchTasks):
                 raise RuntimeError("Coordinator did not return validated ResearchTasks.")
 
+            intent = state["trip_intent"]
+            destinations = intent.get("destinations", [])
+
             args = {name: dict(response.tool_arguments.get(name) or {}) for name in schemas}
+
+            if len(destinations) == 1:
+                destination = destinations[0]
+
+                for tool_name, schema in schemas.items():
+                    if "destination" in schema.get("properties", {}):
+                        args[tool_name]["destination"] = destination
+
+            budget = intent.get("nightly_hotel_budget")
+
+            if budget is not None and "search_hotels" in args:
+                args["search_hotels"]["budget"] = budget
+
+            # Explicit user corrections override extracted information.
+            for tool_name, fields in explicit_context.items():
+                if tool_name in args:
+                    args[tool_name].update(fields)
+            
             nightly = explicit_nightly_budget(state["user_request"])
             if nightly is not None:
                 args["search_hotels"]["budget"] = nightly
@@ -324,8 +460,8 @@ async def main() -> None:
                     args[name].update(fields)
 
             return {
-                "activities_task": response.activities_task,
-                "accommodation_task": response.accommodation_task,
+                "activities_task": clean_task(response.activities_task),
+                "accommodation_task": clean_task(response.accommodation_task),
                 "tool_arguments": args,
             }
 
@@ -488,8 +624,10 @@ async def main() -> None:
 
         def dispatch_research(state: TripState):
             sends = []
+            agents = []
 
             if(state.get("activities_task")):
+                agents.append("activities")
                 sends.append(
                      Send("research_worker", {
                         "agent": "activities",
@@ -501,6 +639,7 @@ async def main() -> None:
                 )
 
             if state.get("accommodation_task"):
+                agents.append("accommodation")
                 sends.append(
                     Send("research_worker", {
                         "agent": "accommodation",
@@ -510,10 +649,16 @@ async def main() -> None:
                         ).get("search_hotels", {})
                     })
                 )
+            logger.info(
+                "Workflow route: route_agents -> research_worker "
+                "(agents=%s)",
+                ", ".join(agents) if agents else "none",
+            )
             return sends
                 
         async def research_worker(state: ResearchWorkerState):
             agent_name = state["agent"]
+            logger.info("Research worker selected specialist: %s", agent_name)
 
             if agent_name == "activities":
                 graph = activities_graph
@@ -554,37 +699,70 @@ async def main() -> None:
                 not state.get("activities_task")
                 and not state.get("accommodation_task")
             ):
+                logger.info(
+                    "Workflow route: requirements_check -> needs_input "
+                    "(no research tasks selected)"
+                )
                 return "needs_input"
 
             if not state.get("missing_details"):
+                logger.info(
+                    "Workflow route: requirements_check -> route_agents"
+                )
                 return "route_agents"
 
             if state.get("clarification_rounds", 0) >= MAX_CLARIFICATION_ROUNDS:
+                logger.info(
+                    "Workflow route: requirements_check -> needs_input "
+                    "(clarification limit reached)"
+                )
                 return "needs_input"
 
+            logger.info("Workflow route: requirements_check -> ask_user")
             return "ask_user"
     
         def route_review(state: TripState) -> str:
             if state.get("status") == "verified" and not state.get("issues"):
+                logger.info("Workflow route: validate_final -> END (verified)")
                 return "__end__"
-            return "review_again" if state.get("plan_attempts", 0) < MAX_PLAN_ATTEMPTS else "__end__"
+            if state.get("plan_attempts", 0) < MAX_PLAN_ATTEMPTS:
+                logger.info(
+                    "Workflow route: validate_final -> final_planner "
+                    "(revision required)"
+                )
+                return "review_again"
+            logger.info(
+                "Workflow route: validate_final -> END (attempt limit reached)"
+            )
+            return "__end__"
 
         def needs_input(_: TripState) -> dict[str, str]:
             return {"status": "needs_input"}
 
         workflow = StateGraph(TripState)
-        workflow.add_node("coordinator", coordinator)
-        workflow.add_node("requirements_check", requirements_check)
-        workflow.add_node("route_agents", route_agents)
-        workflow.add_node("research_worker",research_worker)
-        workflow.add_node("ask_user", ask_user)
-        workflow.add_node("needs_input", needs_input)
-        workflow.add_node("activities", activities)
-        workflow.add_node("accommodation", accommodation)
-        workflow.add_node("final_planner", final_planner)
-        workflow.add_node("validate_final", validate_final)
+        workflow.add_node("extract_trip_intent",extract_trip_intent)
+        workflow.add_node("coordinator", log_node("coordinator", coordinator))
+        workflow.add_node(
+            "requirements_check",
+            log_node("requirements_check", requirements_check),
+        )
+        workflow.add_node("route_agents", log_node("route_agents", route_agents))
+        workflow.add_node(
+            "research_worker",
+            log_node("research_worker", research_worker),
+        )
+        workflow.add_node("ask_user", log_node("ask_user", ask_user))
+        workflow.add_node("needs_input", log_node("needs_input", needs_input))
+        workflow.add_node("activities", log_node("activities", activities))
+        workflow.add_node(
+            "accommodation",
+            log_node("accommodation", accommodation),
+        )
+        workflow.add_node("final_planner", log_node("final_planner", final_planner))
+        workflow.add_node("validate_final", log_node("validate_final", validate_final))
 
-        workflow.add_edge(START, "coordinator")
+        workflow.add_edge(START, "extract_trip_intent")
+        workflow.add_edge("extract_trip_intent", "coordinator")
         workflow.add_edge("coordinator", "requirements_check")
         workflow.add_conditional_edges("requirements_check", route_requirements, {
             "ask_user": "ask_user",  "route_agents": "route_agents", "needs_input": "needs_input"
@@ -609,15 +787,23 @@ async def main() -> None:
         if callbacks:
             config["callbacks"] = callbacks
 
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+
         request = input("Enter your trip request (blank for Kyoto demo): ").strip()
         if not request:
             request = "Plan a 3-day Kyoto trip with a nightly hotel budget of $150."
+        logger.info("Starting trip workflow")
+        logger.info("Workflow route: START -> coordinator")
         result = await graph.ainvoke({
             "user_request": request, "issues": [], "input_errors": [],
             "plan_attempts": 0, "clarification_rounds": 0, "status": "pending",
         }, config=config)
 
         while result.get("__interrupt__"):
+            logger.info("Trip workflow paused for user clarification")
             payload = result["__interrupt__"][0].value
             answers: dict[str, dict[str, str]] = {}
             print("\nMissing or invalid details:")
@@ -625,8 +811,13 @@ async def main() -> None:
                 print(f"- {item['tool']}.{item['field']}: {item['description']}")
                 value = input("  Your answer: ").strip()
                 answers.setdefault(item["tool"], {})[item["field"]] = value
+            logger.info("Resuming trip workflow after user clarification")
             result = await graph.ainvoke(Command(resume=answers), config=config)
 
+        logger.info(
+            "Trip workflow finished with status=%s",
+            result.get("status", "unknown"),
+        )
         print("\nStatus:", result.get("status", "unknown"))
         if result.get("status") == "needs_input":
             print("Could not complete required details:", json.dumps(result.get("missing_details", []), indent=2))
