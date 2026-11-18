@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["wander"]
+packages = ["wander", "wander.graph", "wander.graph.nodes", "wander.data"]
 
 [tool.setuptools.package-dir]
 "" = "."
