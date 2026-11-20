@@ -161,7 +161,7 @@ def test_routing_with_partial_and_no_research():
             "unknown": [],
         }
     }
-    assert route_research_completeness(partial) == "final_planner"
+    assert route_research_completeness(partial) == "prepare_itinerary_context"
 
     none = {
         "research_coverage": {

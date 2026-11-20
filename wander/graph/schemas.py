@@ -74,6 +74,7 @@ class TripState(TypedDict):
     validated_jobs: NotRequired[list[dict[str, Any]]]
     job_answers: NotRequired[dict[str, dict[str, Any]]]
     research_coverage: NotRequired[dict[str, Any]]
+    itinerary_context: NotRequired[dict[str, Any]]
 
 class ResearchJob(BaseModel):
     job_id: str

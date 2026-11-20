@@ -15,6 +15,7 @@ from .trip_intent import create_extract_trip_intent_node
 from .validate_final import create_validate_final_node
 from .job_creation import create_research_jobs_node
 from .check_research_completeness import create_check_research_completeness_node
+from .itinerary_context import prepare_itinerary_context
 
 
 def build_nodes(context: TripNodeContext) -> dict[str, Callable[..., Any]]:
@@ -65,6 +66,10 @@ def build_nodes(context: TripNodeContext) -> dict[str, Callable[..., Any]]:
         "check_research_completeness": log_node(
             "check_research_completeness",
             create_check_research_completeness_node(context),
+        ),
+        "prepare_itinerary_context": log_node(
+            "prepare_itinerary_context",
+            prepare_itinerary_context,
         ),
     }
 

@@ -47,6 +47,8 @@ contents.
 - `wander/graph/validation.py` contains tool-argument normalization and validation.
 - `wander/graph/nodes/` contains one module per graph node, with shared dependencies
   in `context.py` and conditional routing functions in `routes.py`.
+- `nodes/itinerary_context.py` groups usable research by destination and allocates
+  initial city-days deterministically before the Final Planner.
 - `wander/graph/trip_coordinator.py` assembles and runs the graph.
 
 ## Available tools

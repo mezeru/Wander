@@ -8,14 +8,11 @@ from typing import Any
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from langchain.mcp import MCPAdapter
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from .accommodation_agent import build_accommodation_graph
-from .activities_graph import build_activities_graph
 from .nodes import TripNodeContext, build_nodes
 from .nodes.routes import (
     MAX_CLARIFICATION_ROUNDS,
@@ -78,7 +75,56 @@ def tool_schema(tool: Any) -> dict[str, Any]:
     return schema if isinstance(schema, dict) else schema.model_json_schema()
 
 
+def build_workflow(node_context: TripNodeContext):
+    workflow = StateGraph(TripState)
+    for node_name, node in build_nodes(node_context).items():
+        workflow.add_node(node_name, node)
+
+    workflow.add_edge(START, "extract_trip_intent")
+    workflow.add_edge("extract_trip_intent", "create_research_jobs")
+    workflow.add_edge("create_research_jobs", "coordinator")
+    workflow.add_edge("coordinator", "requirements_check")
+    workflow.add_conditional_edges(
+        "requirements_check",
+        route_requirements,
+        {
+            "ask_user": "ask_user",
+            "ready_for_dispatch": "ready_for_dispatch",
+            "needs_input": "needs_input",
+        },
+    )
+    workflow.add_edge("ask_user", "requirements_check")
+    workflow.add_conditional_edges(
+        "ready_for_dispatch",
+        dispatch_research,
+        ["research_worker"],
+    )
+    workflow.add_edge("needs_input", END)
+    workflow.add_edge("research_worker", "check_research_completeness")
+    workflow.add_conditional_edges(
+        "check_research_completeness",
+        route_research_completeness,
+        {
+            "prepare_itinerary_context": "prepare_itinerary_context",
+            "needs_input": "needs_input",
+        },
+    )
+    workflow.add_edge("prepare_itinerary_context", "final_planner")
+    workflow.add_edge("final_planner", "validate_final")
+    workflow.add_conditional_edges(
+        "validate_final",
+        route_review,
+        {"__end__": END, "review_again": "final_planner"},
+    )
+    return workflow.compile(checkpointer=InMemorySaver())
+
+
 async def main() -> None:
+    from langchain.mcp import MCPAdapter
+
+    from .accommodation_agent import build_accommodation_graph
+    from .activities_graph import build_activities_graph
+
     load_dotenv()
     model = ChatOllama(model=MODEL_NAME, temperature=0)
     coordinator_model = model.with_structured_output(ResearchTasks)
@@ -135,47 +181,7 @@ async def main() -> None:
             accommodation_graph=accommodation_graph,
         )
 
-        workflow = StateGraph(TripState)
-        for node_name, node in build_nodes(node_context).items():
-            workflow.add_node(node_name, node)
-
-        workflow.add_edge(START, "extract_trip_intent")
-        workflow.add_edge("extract_trip_intent", "create_research_jobs")
-        workflow.add_edge("create_research_jobs", "coordinator")
-        workflow.add_edge("coordinator", "requirements_check")
-        workflow.add_conditional_edges(
-            "requirements_check",
-            route_requirements,
-            {
-                "ask_user": "ask_user",
-                "ready_for_dispatch": "ready_for_dispatch",
-                "needs_input": "needs_input",
-            },
-        )
-        workflow.add_edge("ask_user", "requirements_check")
-        workflow.add_conditional_edges(
-            "ready_for_dispatch",
-            dispatch_research,
-            ["research_worker"],
-        )
-        workflow.add_edge("needs_input", END)
-        workflow.add_edge("research_worker", "check_research_completeness")
-        workflow.add_conditional_edges(
-            "check_research_completeness",
-            route_research_completeness,
-            {
-                "final_planner": "final_planner",
-                "needs_input": "needs_input",
-            },
-        )
-        workflow.add_edge("final_planner", "validate_final")
-        workflow.add_conditional_edges(
-            "validate_final",
-            route_review,
-            {"__end__": END, "review_again": "final_planner"},
-        )
-
-        graph = workflow.compile(checkpointer=InMemorySaver())
+        graph = build_workflow(node_context)
         config: dict[str, Any] = {
             "configurable": {"thread_id": str(uuid4())},
             "recursion_limit": 50,

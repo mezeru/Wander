@@ -74,21 +74,21 @@ def route_research_completeness(state: TripState) -> str:
         return "needs_input"
     if integrity:
         logger.info(
-            "Workflow route: check_research_completeness -> final_planner "
+            "Workflow route: check_research_completeness -> prepare_itinerary_context "
             "(partial coverage or orchestration integrity issue)"
         )
-        return "final_planner"
+        return "prepare_itinerary_context"
     if coverage.get("failed") or coverage.get("no_data"):
         logger.info(
-            "Workflow route: check_research_completeness -> final_planner "
+            "Workflow route: check_research_completeness -> prepare_itinerary_context "
             "(partial research coverage)"
         )
-        return "final_planner"
+        return "prepare_itinerary_context"
     logger.info(
-        "Workflow route: check_research_completeness -> final_planner "
+        "Workflow route: check_research_completeness -> prepare_itinerary_context "
         "(complete research coverage)"
     )
-    return "final_planner"
+    return "prepare_itinerary_context"
 
 
 def route_review(state: TripState) -> str:
