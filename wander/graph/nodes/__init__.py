@@ -10,9 +10,11 @@ from .final_planner import create_final_planner_node
 from .needs_input import needs_input
 from .requirements_check import create_requirements_check_node
 from .research_worker import create_research_worker_node
-from .route_agents import route_agents
+from .route_agents import ready_for_dispatch, route_agents
 from .trip_intent import create_extract_trip_intent_node
 from .validate_final import create_validate_final_node
+from .job_creation import create_research_jobs_node
+from .check_research_completeness import create_check_research_completeness_node
 
 
 def build_nodes(context: TripNodeContext) -> dict[str, Callable[..., Any]]:
@@ -30,6 +32,10 @@ def build_nodes(context: TripNodeContext) -> dict[str, Callable[..., Any]]:
             create_requirements_check_node(context),
         ),
         "route_agents": log_node("route_agents", route_agents),
+        "ready_for_dispatch": log_node(
+            "ready_for_dispatch",
+            ready_for_dispatch,
+        ),
         "research_worker": log_node(
             "research_worker",
             create_research_worker_node(context),
@@ -51,6 +57,14 @@ def build_nodes(context: TripNodeContext) -> dict[str, Callable[..., Any]]:
         "validate_final": log_node(
             "validate_final",
             create_validate_final_node(context),
+        ),
+        "create_research_jobs": log_node(
+            "create_research_jobs",
+            create_research_jobs_node(context),
+        ),
+        "check_research_completeness": log_node(
+            "check_research_completeness",
+            create_check_research_completeness_node(context),
         ),
     }
 

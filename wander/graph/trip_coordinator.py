@@ -20,9 +20,10 @@ from .nodes import TripNodeContext, build_nodes
 from .nodes.routes import (
     MAX_CLARIFICATION_ROUNDS,
     MAX_PLAN_ATTEMPTS,
-    dispatch_research,
     route_requirements,
+    route_research_completeness,
     route_review,
+    dispatch_research
 )
 from .schemas import (
     ResearchTasks,
@@ -68,6 +69,7 @@ __all__ = [
     "tool_schema",
     "validate_arguments",
 ]
+
 
 
 def tool_schema(tool: Any) -> dict[str, Any]:
@@ -138,25 +140,34 @@ async def main() -> None:
             workflow.add_node(node_name, node)
 
         workflow.add_edge(START, "extract_trip_intent")
-        workflow.add_edge("extract_trip_intent", "coordinator")
+        workflow.add_edge("extract_trip_intent", "create_research_jobs")
+        workflow.add_edge("create_research_jobs", "coordinator")
         workflow.add_edge("coordinator", "requirements_check")
         workflow.add_conditional_edges(
             "requirements_check",
             route_requirements,
             {
                 "ask_user": "ask_user",
-                "route_agents": "route_agents",
+                "ready_for_dispatch": "ready_for_dispatch",
                 "needs_input": "needs_input",
             },
         )
+        workflow.add_edge("ask_user", "requirements_check")
         workflow.add_conditional_edges(
-            "route_agents",
+            "ready_for_dispatch",
             dispatch_research,
             ["research_worker"],
         )
-        workflow.add_edge("ask_user", "coordinator")
         workflow.add_edge("needs_input", END)
-        workflow.add_edge("research_worker", "final_planner")
+        workflow.add_edge("research_worker", "check_research_completeness")
+        workflow.add_conditional_edges(
+            "check_research_completeness",
+            route_research_completeness,
+            {
+                "final_planner": "final_planner",
+                "needs_input": "needs_input",
+            },
+        )
         workflow.add_edge("final_planner", "validate_final")
         workflow.add_conditional_edges(
             "validate_final",
@@ -187,6 +198,7 @@ async def main() -> None:
                 "user_request": request,
                 "issues": [],
                 "input_errors": [],
+                "job_answers": {},
                 "plan_attempts": 0,
                 "clarification_rounds": 0,
                 "status": "pending",
@@ -198,11 +210,15 @@ async def main() -> None:
             logger.info("Trip workflow paused for user clarification")
             payload = result["__interrupt__"][0].value
             answers: dict[str, dict[str, str]] = {}
-            print("\nMissing or invalid details:")
+            print("\nMissing or invalid research details:")
             for item in payload["fields"]:
-                print(f"- {item['tool']}.{item['field']}: {item['description']}")
+                job_id = item["job_id"]
+                destination = item.get("destination") or "Unknown destination"
+                field = item["field"]
+                print(f"\n{destination} - {job_id}")
+                print(f"{field}: {item['description']}")
                 value = input("  Your answer: ").strip()
-                answers.setdefault(item["tool"], {})[item["field"]] = value
+                answers.setdefault(job_id, {})[field] = value
             logger.info("Resuming trip workflow after user clarification")
             result = await graph.ainvoke(Command(resume=answers), config=config)
 
@@ -223,10 +239,6 @@ async def main() -> None:
                 "\nFinal itinerary (mock research):\n",
                 result.get("final_plan", "No plan generated."),
             )
-
-    if langfuse_client is not None:
-        langfuse_client.flush()
-
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -23,6 +23,14 @@ def create_activities_node(context: TripNodeContext):
             },
             config={"recursion_limit": 15},
         )
-        return {"activities_result": str(response["messages"][-1].content)}
+        return {
+                "research_results": [{
+                    "job_id": state["job_id"],
+                    "agent": state["agent"],
+                    "destination": state["destination"],
+                    "status": "completed",
+                    "result": response["messages"][-1].content,
+                }]
+            }
 
     return activities

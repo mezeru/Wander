@@ -46,7 +46,9 @@ class ValidationResult(BaseModel):
 
 
 class ResearchWorkerState(TypedDict):
+    job_id: str
     agent: Literal["activities", "accommodation"]
+    destination: str
     task: str
     arguments: dict[str, Any]
 
@@ -64,7 +66,19 @@ class TripState(TypedDict):
     plan_attempts: NotRequired[int]
     issues: NotRequired[list[str]]
     status: NotRequired[
-        Literal["pending", "needs_input", "verified", "needs_revision"]
+        Literal["pending", "needs_input", "verified", "needs_revision", "ready_for_dispatch", "partial", "research_failed"]
     ]
     research_results: Annotated[list[dict[str, Any]], operator.add]
     trip_intent: TripIntent
+    research_jobs: NotRequired[list[dict[str, Any]]]
+    validated_jobs: NotRequired[list[dict[str, Any]]]
+    job_answers: NotRequired[dict[str, dict[str, Any]]]
+    research_coverage: NotRequired[dict[str, Any]]
+
+class ResearchJob(BaseModel):
+    job_id: str
+    agent: Literal["activities", "accommodation"]
+    destination: str
+    tool_name: str
+    task: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
