@@ -4,6 +4,14 @@ from functools import wraps
 from time import perf_counter
 from typing import Any, Callable
 
+try:
+    from langgraph.errors import GraphInterrupt
+except ImportError:
+    try:
+        from langgraph.types import GraphInterrupt
+    except ImportError:
+        GraphInterrupt = None
+
 
 logger = logging.getLogger("wander.graph")
 
@@ -16,7 +24,10 @@ def log_node(name: str, node: Callable[..., Any]) -> Callable[..., Any]:
             logger.info("Node started: %s", name)
             try:
                 result = await node(*args, **kwargs)
-            except Exception:
+            except Exception as exc:
+                if GraphInterrupt is not None and isinstance(exc, GraphInterrupt):
+                    logger.info("Node interrupted for clarification: %s", name)
+                    raise
                 logger.exception("Node failed: %s", name)
                 raise
             logger.info(
@@ -34,7 +45,10 @@ def log_node(name: str, node: Callable[..., Any]) -> Callable[..., Any]:
         logger.info("Node started: %s", name)
         try:
             result = node(*args, **kwargs)
-        except Exception:
+        except Exception as exc:
+            if GraphInterrupt is not None and isinstance(exc, GraphInterrupt):
+                logger.info("Node interrupted for clarification: %s", name)
+                raise
             logger.exception("Node failed: %s", name)
             raise
         logger.info(

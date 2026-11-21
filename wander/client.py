@@ -4,16 +4,14 @@ import asyncio
 from pathlib import Path
 
 from mcp import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.stdio import stdio_client
+
+from wander.mcp_runtime import server_parameters
 
 
 async def main() -> None:
     project_root = Path(__file__).resolve().parent.parent
-    server = StdioServerParameters(
-        command="python",
-        args=["-m", "wander.mcp_server"],
-        cwd=str(project_root),
-    )
+    server = server_parameters(project_root)
 
     async with stdio_client(server) as (read, write):
         async with ClientSession(read, write) as session:
