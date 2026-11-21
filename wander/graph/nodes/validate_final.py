@@ -1,19 +1,26 @@
 import json
+import logging
+import re
 from typing import Any
 from pydantic import ValidationError
 
 from ..schemas import TripItinerary, TripState
+from .check_research_completeness import execution_warnings, lodging_limitations
 from .context import TripNodeContext
+from .itinerary_context import group_research_by_destination
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_name(value: Any) -> str:
-    return value.strip().casefold() if isinstance(value, str) else ""
+    return " ".join(value.casefold().split()) if isinstance(value, str) else ""
 
 
 def validate_structure(state: TripState) -> tuple[TripItinerary | None, list[str]]:
     raw = state.get("structured_plan")
     if raw is None:
-        return None, ["Structured itinerary is missing."]
+        return None, [state.get("planner_error") or "Structured itinerary is missing."]
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -140,7 +147,7 @@ def _result_content(value: dict[str, Any]) -> Any:
     return content
 
 
-def _structured_records(content: Any, agent: str) -> tuple[list[dict[str, Any]], bool]:
+def _structured_records(content: Any) -> tuple[list[dict[str, Any]], bool]:
     if isinstance(content, list):
         records = [item for item in content if isinstance(item, dict)]
         if records:
@@ -171,13 +178,6 @@ def _entity_name(record: dict[str, Any]) -> str:
     return ""
 
 
-def _entity_id(record: dict[str, Any]) -> str:
-    for key in ("id", "entity_id", "attraction_id", "hotel_id"):
-        if isinstance(record.get(key), str):
-            return record[key]
-    return ""
-
-
 def validate_evidence_references(
     state: TripState,
     plan: TripItinerary,
@@ -185,6 +185,7 @@ def validate_evidence_references(
     issues: list[str] = []
     warnings: list[str] = []
     jobs: dict[str, dict[str, Any]] = {}
+    duplicate_jobs: set[str] = set()
     for job in state.get("validated_jobs", []) or []:
         if not isinstance(job, dict):
             warnings.append("Research contains a malformed validated job.")
@@ -192,9 +193,12 @@ def validate_evidence_references(
         job_id = job.get("job_id")
         if isinstance(job_id, str) and job_id:
             if job_id in jobs:
-                issues.append(f"Duplicate authoritative research job ID '{job_id}'.")
+                duplicate_jobs.add(job_id)
             else:
                 jobs[job_id] = job
+    for job_id in duplicate_jobs:
+        warnings.append(f"Duplicate authoritative research job ID '{job_id}'.")
+        jobs.pop(job_id)
 
     counts: dict[str, int] = {}
     results: dict[str, dict[str, Any]] = {}
@@ -218,6 +222,9 @@ def validate_evidence_references(
 
     for day in plan.days:
         for activity in day.activities:
+            if not _normalize_name(activity.name):
+                issues.append(f"An activity on day {day.day_number} is missing its name.")
+                continue
             job_id = activity.evidence_job_id
             if not job_id:
                 issues.append(
@@ -245,6 +252,8 @@ def validate_evidence_references(
             )
             issues.extend(issues_add)
             warnings.extend(warning_add)
+        elif day.accommodation_evidence_job_id:
+            issues.append(f"Day {day.day_number} has an accommodation evidence ID without a hotel name.")
     return issues, warnings
 
 
@@ -276,11 +285,15 @@ def _validate_reference(
 
     result = results.get(job_id)
     if result is None:
+        issues.append(
+            f"Remove the unsupported recommendation '{entity_name}' citing '{job_id}'."
+        )
         warnings.append(
             f"Research result for evidence job '{job_id}' is missing or duplicated."
         )
         return issues, warnings
     if result.get("status") != "completed":
+        issues.append(f"Remove the unsupported recommendation '{entity_name}' citing '{job_id}'.")
         warnings.append(
             f"Research job '{job_id}' has status '{result.get('status')}' "
             "and cannot establish evidence."
@@ -296,7 +309,7 @@ def _validate_reference(
         return issues, warnings
 
     content = _result_content(result)
-    records, structured = _structured_records(content, expected_agent)
+    records, structured = _structured_records(content)
     if not structured:
         warnings.append(
             f"Evidence job '{job_id}' contains only free-form or unstructured text; "
@@ -304,7 +317,6 @@ def _validate_reference(
         )
         return issues, warnings
 
-    recommended_id = ""
     normalized_name = _normalize_name(entity_name)
     names = {_normalize_name(_entity_name(record)) for record in records}
     supported = normalized_name in names
@@ -314,116 +326,135 @@ def _validate_reference(
             f"in the complete structured evidence from job '{job_id}'."
         )
     if expected_agent == "accommodation":
-        budget_issues = _validate_hotel_budget(state, entity_name, records)
+        budget_issues = _validate_hotel_budget(state, entity_name, records, job)
         issues.extend(budget_issues)
     return issues, warnings
 
 
+def _hotel_over_budget(state: TripState, hotel: dict[str, Any], job: dict[str, Any]) -> bool:
+    intent = state.get("trip_intent", {})
+    if not isinstance(intent, dict):
+        intent = intent.model_dump()
+    budget = job.get("arguments", {}).get("budget", intent.get("nightly_hotel_budget"))
+    budget_currency = intent.get("currency") or "USD"
+    price = next(
+        (hotel[key] for key in ("nightly_price", "nightly_rate", "price", "rate")
+         if hotel.get(key) is not None),
+        None,
+    )
+    currency = hotel.get("currency") or hotel.get("price_currency")
+    if isinstance(price, dict):
+        currency = price.get("currency") or currency
+        price = price.get("amount")
+    return (
+        isinstance(price, (int, float)) and not isinstance(price, bool)
+        and isinstance(budget, (int, float)) and not isinstance(budget, bool)
+        and isinstance(currency, str) and _normalize_name(currency) == _normalize_name(budget_currency)
+        and price > budget >= 0
+    )
+
+
 def _validate_hotel_budget(
-    state: TripState,
-    hotel_name: str,
-    records: list[dict[str, Any]],
+    state: TripState, hotel_name: str, records: list[dict[str, Any]], job: dict[str, Any],
 ) -> list[str]:
+    if any(
+        _normalize_name(_entity_name(record)) == _normalize_name(hotel_name)
+        and _hotel_over_budget(state, record, job)
+        for record in records
+    ):
+        return [f"Hotel '{hotel_name}' has a researched price exceeding the nightly budget."]
+    return []
+
+
+def _validate_research_use(
+    state: TripState, plan: TripItinerary, context: dict[str, Any],
+) -> tuple[list[str], list[str]]:
     issues: list[str] = []
-    trip_intent = state.get("trip_intent")
-    budget: Any = None
-    budget_currency: str | None = None
-    if isinstance(trip_intent, dict):
-        budget = trip_intent.get("nightly_hotel_budget")
-        budget_currency = trip_intent.get("currency")
-    elif hasattr(trip_intent, "nightly_hotel_budget"):
-        budget = getattr(trip_intent, "nightly_hotel_budget")
-        budget_currency = getattr(trip_intent, "currency", None)
+    warnings: list[str] = []
+    allocation = context.get("day_allocation")
+    if not isinstance(allocation, dict):
+        return issues, warnings
+    without_lodging = {
+        slot["day_number"] for slot in context.get("day_slots", [])
+        if slot.get("lodging_night") is False
+    }
+    for day in plan.days:
+        if day.day_number in without_lodging and day.accommodation:
+            issues.append(f"Day {day.day_number} falls outside the lodging dates; leave both accommodation fields empty.")
 
-    for job_id_result in state.get("research_results", []) or []:
-        if not isinstance(job_id_result, dict):
+    grouped = context.get("research_by_destination")
+    if not isinstance(grouped, dict):
+        if not state.get("trip_intent"):
+            return issues, warnings
+        grouped = group_research_by_destination(state)
+    jobs = {
+        job["job_id"]: job for job in state.get("validated_jobs", [])
+        if isinstance(job, dict) and "job_id" in job
+    }
+    for item in context.get("research_coverage", {}).get("evidence_issues", []):
+        if item.get("reason") == "assignment_mismatch":
+            warnings.append(f"Research metadata for job '{item['job_id']}' did not match its assignment.")
+    for destination, count in allocation.items():
+        if type(count) is not int or count <= 0:
             continue
-        # Job arguments are not included in result records; fallback fields may
-        # provide explicit currency/budget metadata without fabrication.
-        if isinstance(job_id_result.get("currency"), str):
-            budget_currency = budget_currency or job_id_result["currency"]
-        if job_id_result.get("budget") is not None:
-            budget = budget if budget is not None else job_id_result["budget"]
-
-    tool_arguments = state.get("tool_arguments")
-    if isinstance(tool_arguments, dict):
-        hotel_arguments = tool_arguments.get("search_hotels")
-        if isinstance(hotel_arguments, dict):
-            if budget is None:
-                budget = hotel_arguments.get("budget")
-            if budget_currency is None:
-                budget_currency = hotel_arguments.get("currency")
-
-    user_context = state.get("user_context")
-    if isinstance(user_context, dict):
-        for values in user_context.values():
-            if not isinstance(values, dict):
-                continue
-            if budget is None:
-                budget = values.get("nightly_hotel_budget", values.get("nightly_budget"))
-            if budget_currency is None:
-                budget_currency = values.get("currency")
-
-    for record in records:
-        if _normalize_name(_entity_name(record)) != _normalize_name(hotel_name):
-            continue
-        price = next(
-            (
-                record[key]
-                for key in ("nightly_rate", "nightly_price", "price", "rate")
-                if key in record
-            ),
-            None,
-        )
-        currency = next(
-            (
-                record[key]
-                for key in ("currency", "price_currency")
-                if isinstance(record.get(key), str)
-            ),
-            None,
-        )
-        if (
-            isinstance(price, (int, float))
-            and not isinstance(price, bool)
-            and price >= 0
-            and isinstance(budget, (int, float))
-            and not isinstance(budget, bool)
-            and budget >= 0
-            and isinstance(currency, str)
-            and isinstance(budget_currency, str)
-            and currency.strip().casefold() == budget_currency.strip().casefold()
-        ):
-            if float(price) > float(budget):
-                issues.append(
-                    f"Hotel '{hotel_name}' costs {price} {currency}, "
-                    f"exceeding the {budget} {budget_currency} nightly budget."
+        destination_jobs = [job for job in jobs.values() if job.get("destination") == destination]
+        evidence = grouped.get(destination, {})
+        days = [day for day in plan.days if _normalize_name(day.destination) == _normalize_name(destination)]
+        if any(job.get("agent") == "activities" for job in destination_jobs):
+            names_by_job: dict[str, set[str]] = {}
+            unstructured = False
+            for result in evidence.get("activities", []):
+                records, structured = _structured_records(_result_content(result))
+                unstructured |= not structured
+                names_by_job[result["job_id"]] = {
+                    name for record in records if (name := _normalize_name(_entity_name(record)))
+                }
+            distinct = set().union(*names_by_job.values())
+            target = min(len(distinct), count)
+            if unstructured:
+                warnings.append(f"{destination}: free-form attraction research could not be counted.")
+            elif len(distinct) < count:
+                warnings.append(
+                    f"{destination}: {len(distinct)} distinct researched attractions for {count} itinerary days."
                 )
-    return issues
 
+            used: set[str] = set()
+            occupied = 0
+            for day in days:
+                names = {
+                    name for activity in day.activities
+                    if (name := _normalize_name(activity.name)) in names_by_job.get(activity.evidence_job_id, set())
+                }
+                occupied += bool(names)
+                used.update(names)
+            if len(used) < target or occupied < target:
+                issues.append(
+                    f"{destination}: distribute at least {target} distinct researched attractions "
+                    f"across {target} different days before adding extra stops."
+                )
 
-def collect_research_warnings(
-    state: TripState,
-    evidence_warnings: list[str],
-) -> list[str]:
-    warnings = list(evidence_warnings)
-    coverage = state.get("research_coverage")
-    if not isinstance(coverage, dict):
-        coverage = {}
-    for job_id in coverage.get("failed", []) or []:
-        warnings.append(f"Research job '{job_id}' failed; evidence is unavailable.")
-    for job_id in coverage.get("no_data", []) or []:
-        warnings.append(f"Research job '{job_id}' returned no data.")
-    for job_id in coverage.get("missing", []) or []:
-        warnings.append(f"Research result for job '{job_id}' is missing.")
-    for job_id in coverage.get("duplicate", []) or []:
-        warnings.append(
-            f"Duplicate research result records for job '{job_id}' "
-            "cannot establish evidence."
-        )
-    for job_id in coverage.get("unknown", []) or []:
-        warnings.append(f"Unknown research result '{job_id}' is not authoritative.")
-    return sorted(set(warning for warning in warnings if warning))
+        candidates = []
+        for result in evidence.get("accommodation", []):
+            records, _ = _structured_records(_result_content(result))
+            warnings.extend(lodging_limitations(records, destination))
+            candidates.extend(
+                record for record in records
+                if _normalize_name(_entity_name(record))
+                and not _hotel_over_budget(state, record, jobs.get(result["job_id"], {}))
+            )
+        eligible_days = [day for day in days if day.day_number not in without_lodging]
+        hotels_selected = {
+            _normalize_name(day.accommodation) for day in eligible_days if day.accommodation
+        }
+        if len(hotels_selected) > 1:
+            issues.append(f"{destination}: choose one researched property for the validated lodging stay.")
+        if candidates and eligible_days and not hotels_selected:
+            issues.append(
+                f"{destination}: include a researched lodging candidate and its evidence job ID."
+            )
+        elif not candidates and any(job.get("agent") == "accommodation" for job in destination_jobs):
+            warnings.append(f"{destination}: no usable lodging candidate was established.")
+    return issues, warnings
 
 
 def determine_validation_status(
@@ -440,27 +471,54 @@ def determine_validation_status(
 def create_validate_final_node(_context: TripNodeContext):
     async def validate_final(state: TripState) -> dict[str, Any]:
         plan, issues = validate_structure(state)
-        if plan is None:
-            status = determine_validation_status(issues, [])
-            return {"issues": sorted(set(issues)), "research_warnings": [], "status": status}
+        coverage = state.get("research_coverage") or {}
+        research_warnings = execution_warnings(coverage)
+        updates: dict[str, Any] = {}
 
-        itinerary_context = state.get("itinerary_context")
-        if not isinstance(itinerary_context, dict):
-            issues.append("Itinerary context is missing or malformed.")
-        else:
-            issues.extend(validate_day_constraints(plan, itinerary_context))
-            issues.extend(validate_destination_allocation(plan, itinerary_context))
+        if plan is not None:
+            if not re.search(r"\b(?:repeat|revisit|return to|twice)\b", state.get("user_request", ""), re.I):
+                scheduled = set()
+                for day in plan.days:
+                    distinct = []
+                    for activity in day.activities:
+                        key = (_normalize_name(day.destination), _normalize_name(activity.name), activity.evidence_job_id)
+                        if key not in scheduled:
+                            scheduled.add(key)
+                            distinct.append(activity)
+                    day.activities = distinct
+            itinerary_context = state.get("itinerary_context")
+            if not isinstance(itinerary_context, dict):
+                issues.append("Itinerary context is missing or malformed.")
+            else:
+                issues.extend(validate_day_constraints(plan, itinerary_context))
+                issues.extend(validate_destination_allocation(plan, itinerary_context))
+                use_issues, use_warnings = _validate_research_use(state, plan, itinerary_context)
+                issues.extend(use_issues)
+                research_warnings.extend(use_warnings)
 
-        evidence_issues, evidence_warnings = validate_evidence_references(state, plan)
-        issues.extend(evidence_issues)
-        research_warnings = collect_research_warnings(state, evidence_warnings)
+            evidence_issues, evidence_warnings = validate_evidence_references(state, plan)
+            issues.extend(evidence_issues)
+            research_warnings.extend(evidence_warnings)
+            plan.warnings = sorted(set(research_warnings))
+            previous = None
+            for day in plan.days:
+                day.transfer_notes = (
+                    f"Transfer from {previous} to {day.destination}. Check transport options and journey time."
+                    if previous is not None and _normalize_name(previous) != _normalize_name(day.destination)
+                    else None
+                )
+                previous = day.destination
+                for activity in day.activities:
+                    activity.notes = None
+            updates["structured_plan"] = plan.model_dump(mode="json")
+
         issues = sorted(set(issues))
         research_warnings = sorted(set(research_warnings))
         status = determine_validation_status(issues, research_warnings)
-        return {
-            "issues": issues,
-            "research_warnings": research_warnings,
-            "status": status,
-        }
+        logger.info(
+            "Planning attempt=%d status=%s correctable_issues=%s research_limitations=%s",
+            state.get("plan_attempts", 0), status, issues, research_warnings,
+        )
+        return {**updates, "issues": issues, "research_warnings": research_warnings, "status": status}
 
     return validate_final

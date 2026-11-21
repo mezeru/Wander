@@ -248,6 +248,24 @@ def test_budget_violation_and_currency_mismatch():
     assert not any("exceeding" in issue for issue in incomparable["issues"])
 
 
+def test_hotels_must_fit_the_lodging_slots_and_remain_consistent():
+    plan = valid_empty_plan()
+    for day, hotel in zip(plan["days"], ["First Hotel", "Second Hotel", "First Hotel"]):
+        day.update(accommodation=hotel, accommodation_evidence_job_id="accommodation-0")
+    state = state_for(plan, jobs_value=[
+        {"job_id": "accommodation-0", "agent": "accommodation", "destination": "Tokyo"},
+    ], results=[
+        structured_result("accommodation-0", "accommodation", "Tokyo", {
+            "hotels": [{"name": "First Hotel"}, {"name": "Second Hotel"}],
+        }),
+    ])
+    state["itinerary_context"]["day_slots"] = [{"day_number": 3, "lodging_night": False}]
+    result = validate(state)
+    assert result["status"] == "invalid"
+    assert any("one researched property" in issue for issue in result["issues"])
+    assert any("outside the lodging dates" in issue for issue in result["issues"])
+
+
 def test_duplicate_result_and_mismatched_metadata():
     plan = valid_empty_plan()
     plan["days"][0]["activities"] = [{"name": "Place", "evidence_job_id": "activities-0"}]
@@ -258,7 +276,8 @@ def test_duplicate_result_and_mismatched_metadata():
         structured_result("activities-0", "activities", "Tokyo", {"attractions": [{"name": "Place"}]}),
     ])
     duplicate = validate(state)
-    assert duplicate["status"] == "partial"
+    assert duplicate["status"] == "invalid"
+    assert any("unsupported recommendation" in issue for issue in duplicate["issues"])
     assert any("duplicate" in warning.lower() for warning in duplicate["research_warnings"])
 
     mismatched_state = state_for(

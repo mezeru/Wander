@@ -1,95 +1,36 @@
+from pydantic import BaseModel, Field
 
-import asyncio
-import logging
-from pathlib import Path
-
-from langchain.mcp import MCPAdapter
-from langchain_ollama import ChatOllama
-from langgraph.graph import StateGraph, MessagesState, START, END
-from langgraph.prebuilt import ToolNode, tools_condition
-from langchain_core.messages import ToolMessage, SystemMessage
-
-from .logging import log_node
+from .mcp_schemas import Coordinates, Price
+from .specialist import build_specialist_graph
 
 
-logger = logging.getLogger(__name__)
+class AttractionFinding(BaseModel):
+    name: str
+    id: str | None = None
+    category: str | None = None
+    location: str | None = None
+    description: str | None = None
+    coordinates: Coordinates | None = None
+    provider: str | None = None
+    relevance: str | None = None
+    price: Price | None = None
+    estimated_duration_hours: float | None = None
 
 
-async def build_activities_graph(tools: list):
+class ActivitiesReport(BaseModel):
+    attractions: list[AttractionFinding]
+    limitations: list[str] = Field(default_factory=list)
 
 
-    model = ChatOllama(
-        model="qwen3:4b",
-        temperature=0
-    )
+_PROMPT = """Prioritize the numbered attraction candidates for this destination
+using the user's stated interests. Return numbers in suggested order. A note is
+optional and may briefly explain relevance using only supplied facts. The caller
+carries through every candidate's actual name, provider ID, and source fields.
+Return brief limitations only when supported. Leave unknown opening hours,
+admission prices, and visit durations unknown. Do not add outside facts or
+invent attractions to fill days.
+"""
 
-    MAX_TOOL_CALLS = 3
-    model_with_tools = model.bind_tools(tools)
 
-    def count_tool_calls(state: MessagesState) -> int:
-        return sum(
-            isinstance(message, ToolMessage)
-            for message in state["messages"]
-        )
-
-    async def assistant(state: MessagesState):
-
-        calls_used = count_tool_calls(state)
-
-        if calls_used >= MAX_TOOL_CALLS:
-            response = await model.ainvoke(
-                    SystemMessage(content=(
-                '''Your tool budget is exhausted. 
-                Provide a final answer using only 
-                information already retrieved. 
-                Do not invent missing information.'''
-            )),
-            *state["messages"])
-
-        else:
-            response = await model_with_tools.ainvoke([
-                SystemMessage(content=(
-                    "You are the WanderMind Activities Specialist, an expert AI assistant "
-                    "dedicated to discovering, scheduling, and recommending top-tier activities, "
-                    "tours, attractions, and local experiences for travelers.\n\n"
-                    "CORE RESPONSIBILITIES:\n"
-                    "1. Focus exclusively on activities, entertainment, sightseeing, dining spots, and local experiences.\n"
-                    "2. Strictly respect the user's destination, available dates/times, party size, and budget limits.\n"
-                    "3. Use your available tools efficiently to search for real-time ticket availability, operating hours, and pricing.\n"
-                    "4. Never invent ticket prices, operating hours, or ratings. If information is missing from tool outputs, state so clearly.\n\n"
-                    "RESPONSE GUIDELINES:\n"
-                    "- Prioritize options matching the user's stated interests (e.g., family-friendly, outdoor adventure, historical, culinary).\n"
-                    "- Present recommendations with clear names, estimated costs or time durations, and why they fit the traveler's goals."
-                )),
-                *state["messages"]
-            ])
-            
-        return {"messages": [response]}
-
-    def route_assistant(state: MessagesState) -> str:
-        destination = tools_condition(state)
-        logger.info("Workflow route: activities.assistant -> %s", destination)
-        return destination
-
-    graph = StateGraph(MessagesState)
-
-    tool_node = ToolNode(tools)
-    graph.add_node("assistant", log_node("activities.assistant", assistant))
-    graph.add_node("tools", log_node("activities.tools", tool_node.ainvoke))
-
-    graph.add_edge(START, "assistant")
-
-    graph.add_conditional_edges(
-        "assistant",
-        route_assistant,
-        {
-            "tools": "tools",
-            "__end__": END
-        }
-    )
-
-    graph.add_edge("tools", "assistant")
-
-    compiled_graph = graph.compile()
-
-    return compiled_graph
+async def build_activities_graph(tools: list, model):
+    return build_specialist_graph("activities", tools, model, ActivitiesReport, "attractions", _PROMPT)

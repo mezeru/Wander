@@ -173,4 +173,4 @@ def test_routing_with_partial_and_no_research():
             "unknown": [],
         }
     }
-    assert route_research_completeness(none) == "needs_input"
+    assert route_research_completeness(none) == "__end__"

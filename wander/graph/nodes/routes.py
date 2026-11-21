@@ -32,6 +32,8 @@ def dispatch_research(state: TripState) -> list[Send]:
                     "destination": job["destination"],
                     "task": job["task"],
                     "arguments": job["arguments"],
+                    "tool_name": job["tool_name"],
+                    "user_request": state.get("user_request", ""),
                 }
             )
         )
@@ -39,60 +41,37 @@ def dispatch_research(state: TripState) -> list[Send]:
 
 
 def route_requirements(state: TripState) -> str:
-    research_jobs = state.get("research_jobs", [])
-    if not research_jobs:
-        logger.info(
-            "Workflow route: requirements_check -> needs_input "
-            "(no research jobs generated)"
+    if state.get("status") in {"workflow_error", "no_research"}:
+        route = "__end__"
+    elif state.get("missing_details"):
+        route = (
+            "needs_input" if state.get("clarification_rounds", 0) >= MAX_CLARIFICATION_ROUNDS
+            else "ask_user"
         )
-        return "needs_input"
-    if not state.get("missing_details"):
-        logger.info("Workflow route: requirements_check -> ready_for_dispatch")
-        return "ready_for_dispatch"
-    if state.get("clarification_rounds", 0) >= MAX_CLARIFICATION_ROUNDS:
-        logger.info(
-            "Workflow route: requirements_check -> needs_input "
-            "(clarification limit reached)"
-        )
-        return "needs_input"
-    logger.info("Workflow route: requirements_check -> ask_user")
-    return "ask_user"
+    elif "research_jobs" not in state:
+        route = "create_research_jobs"
+    elif state.get("validated_jobs"):
+        route = "ready_for_dispatch"
+    else:
+        route = "__end__"
+    logger.info("Workflow route: requirements_check -> %s", route)
+    return route
 
 
 def route_research_completeness(state: TripState) -> str:
     coverage = state.get("research_coverage", {})
-    integrity = (
-        coverage.get("missing", [])
-        or coverage.get("duplicate", [])
-        or coverage.get("unknown", [])
-    )
-    if coverage.get("completed", 0) == 0:
-        logger.info(
-            "Workflow route: check_research_completeness -> needs_input "
-            "(no usable research)"
-        )
-        return "needs_input"
-    if integrity:
-        logger.info(
-            "Workflow route: check_research_completeness -> prepare_itinerary_context "
-            "(partial coverage or orchestration integrity issue)"
-        )
-        return "prepare_itinerary_context"
-    if coverage.get("failed") or coverage.get("no_data"):
-        logger.info(
-            "Workflow route: check_research_completeness -> prepare_itinerary_context "
-            "(partial research coverage)"
-        )
-        return "prepare_itinerary_context"
-    logger.info(
-        "Workflow route: check_research_completeness -> prepare_itinerary_context "
-        "(complete research coverage)"
-    )
-    return "prepare_itinerary_context"
+    if not (coverage.get("completed") or coverage.get("no_data")):
+        route = "__end__"
+    elif state.get("trip_intent", {}).get("requires_itinerary") is False:
+        route = "__end__"
+    else:
+        route = "prepare_itinerary_context"
+    logger.info("Workflow route: check_research_completeness -> %s", route)
+    return route
 
 
 def route_review(state: TripState) -> str:
-    if state.get("issues"):
+    if state.get("status") == "invalid" and state.get("issues"):
         if state.get("plan_attempts", 0) < MAX_PLAN_ATTEMPTS:
             logger.info(
                 "Workflow route: validate_final -> final_planner "

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -13,6 +14,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+from ..mcp_runtime import server_parameters
+from ..providers.config import travel_settings
 from .nodes import TripNodeContext, build_nodes
 from .nodes.routes import (
     MAX_CLARIFICATION_ROUNDS,
@@ -23,7 +26,6 @@ from .nodes.routes import (
     dispatch_research
 )
 from .schemas import (
-    ResearchTasks,
     ResearchWorkerState,
     TripIntent,
     TripState,
@@ -43,13 +45,17 @@ from .validation import (
 
 
 MODEL_NAME = "qwen3:4b"
-logger = logging.getLogger(__name__)
+DEMO_REQUEST = (
+    "Plan a 3-day trip to Kyoto, Japan. Include sightseeing and a hotel. "
+    "Hotel check-in: 2027-04-10. Hotel check-out: 2027-04-12. "
+    "My nightly hotel budget is $150."
+)
+logger = logging.getLogger("wander.graph.trip_coordinator")
 
 __all__ = [
     "MAX_CLARIFICATION_ROUNDS",
     "MAX_PLAN_ATTEMPTS",
     "MODEL_NAME",
-    "ResearchTasks",
     "ResearchWorkerState",
     "TripIntent",
     "TripState",
@@ -81,16 +87,17 @@ def build_workflow(node_context: TripNodeContext):
         workflow.add_node(node_name, node)
 
     workflow.add_edge(START, "extract_trip_intent")
-    workflow.add_edge("extract_trip_intent", "create_research_jobs")
-    workflow.add_edge("create_research_jobs", "coordinator")
-    workflow.add_edge("coordinator", "requirements_check")
+    workflow.add_edge("extract_trip_intent", "requirements_check")
+    workflow.add_edge("create_research_jobs", "requirements_check")
     workflow.add_conditional_edges(
         "requirements_check",
         route_requirements,
         {
             "ask_user": "ask_user",
+            "create_research_jobs": "create_research_jobs",
             "ready_for_dispatch": "ready_for_dispatch",
             "needs_input": "needs_input",
+            "__end__": END,
         },
     )
     workflow.add_edge("ask_user", "requirements_check")
@@ -106,7 +113,7 @@ def build_workflow(node_context: TripNodeContext):
         route_research_completeness,
         {
             "prepare_itinerary_context": "prepare_itinerary_context",
-            "needs_input": "needs_input",
+            "__end__": END,
         },
     )
     workflow.add_edge("prepare_itinerary_context", "final_planner")
@@ -119,6 +126,14 @@ def build_workflow(node_context: TripNodeContext):
     return workflow.compile(checkpointer=InMemorySaver())
 
 
+def read_trip_request() -> str:
+    raw_request = input("Enter your trip request (blank for Kyoto demo): ")
+    if not raw_request.strip():
+        print("Using the Kyoto demo request.")
+        return DEMO_REQUEST
+    return raw_request
+
+
 async def main() -> None:
     from langchain.mcp import MCPAdapter
 
@@ -126,8 +141,13 @@ async def main() -> None:
     from .activities_graph import build_activities_graph
 
     load_dotenv()
-    model = ChatOllama(model=MODEL_NAME, temperature=0)
-    coordinator_model = model.with_structured_output(ResearchTasks)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    if os.getenv("WANDER_DEBUG", "").strip().casefold() in {"1", "true", "yes"}:
+        logging.getLogger("wander.graph").setLevel(logging.DEBUG)
+    model = ChatOllama(model=MODEL_NAME, temperature=0, reasoning=False)
     intent_model = model.with_structured_output(TripIntent, method="json_schema")
 
     callbacks: list[Any] = []
@@ -141,8 +161,12 @@ async def main() -> None:
     except ImportError:
         pass
 
-    server_path = Path(__file__).resolve().parent.parent / "mcp_server.py"
-    async with MCPAdapter(server_path) as adapter:
+    project_root = Path(__file__).resolve().parents[2]
+    server = server_parameters(project_root)
+    async with MCPAdapter({"mcpServers": {"wander": {
+        "transport": "stdio", "command": server.command, "args": server.args,
+        "cwd": server.cwd, "env": server.env,
+    }}}) as adapter:
         discovered = {tool.name: tool for tool in await adapter.list_tools()}
         needed = {
             name: discovered[name]
@@ -154,28 +178,17 @@ async def main() -> None:
                 "The MCP server must expose search_attractions and search_hotels."
             )
         schemas = {name: tool_schema(tool) for name, tool in needed.items()}
-        tool_specs = [
-            {
-                "name": name,
-                "description": tool.description,
-                "schema": schemas[name],
-            }
-            for name, tool in needed.items()
-        ]
-
         activities_graph = await build_activities_graph(
-            [needed["search_attractions"]]
+            [needed["search_attractions"]], model
         )
         accommodation_graph = await build_accommodation_graph(
-            [needed["search_hotels"]]
+            [needed["search_hotels"]], model
         )
         node_context = TripNodeContext(
             model=model,
-            coordinator_model=coordinator_model,
-            validator_model=None,
             intent_model=intent_model,
             schemas=schemas,
-            tool_specs=tool_specs,
+            live_providers=travel_settings().provider == "live",
             activities_graph=activities_graph,
             accommodation_graph=accommodation_graph,
         )
@@ -188,21 +201,14 @@ async def main() -> None:
         if callbacks:
             config["callbacks"] = callbacks
 
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
-
-        request = input("Enter your trip request (blank for Kyoto demo): ").strip()
-        if not request:
-            request = "Plan a 3-day Kyoto trip with a nightly hotel budget of $150."
+        request = read_trip_request()
+        print(f"Trip request: {request!r}", flush=True)
+        logger.debug("Trip request received: %r", request)
         logger.info("Starting trip workflow")
-        logger.info("Workflow route: START -> extract_trip_intent")
         result = await graph.ainvoke(
             {
                 "user_request": request,
                 "issues": [],
-                "input_errors": [],
                 "job_answers": {},
                 "plan_attempts": 0,
                 "clarification_rounds": 0,
@@ -215,14 +221,19 @@ async def main() -> None:
             logger.info("Trip workflow paused for user clarification")
             payload = result["__interrupt__"][0].value
             answers: dict[str, dict[str, str]] = {}
-            print("\nMissing or invalid research details:")
+            print("\nMissing or invalid trip details:")
             for item in payload["fields"]:
                 job_id = item["job_id"]
-                destination = item.get("destination") or "Unknown destination"
                 field = item["field"]
-                print(f"\n{destination} - {job_id}")
+                print(f"\n{item['destination']} - {job_id}" if item.get("destination") else "\nTrip requirements")
                 print(f"{field}: {item['description']}")
-                value = input("  Your answer: ").strip()
+                if choices := item.get("date_choice"):
+                    print(f"  Or enter job_id.check_in=YYYY-MM-DD or job_id.check_out=YYYY-MM-DD ({choices}).")
+                try:
+                    value = input("  Your answer: ").strip()
+                except EOFError:
+                    print("\nTrip planning paused. The listed details are still required.")
+                    return
                 answers.setdefault(job_id, {})[field] = value
             logger.info("Resuming trip workflow after user clarification")
             result = await graph.ainvoke(Command(resume=answers), config=config)
@@ -232,18 +243,35 @@ async def main() -> None:
             result.get("status", "unknown"),
         )
         print("\nStatus:", result.get("status", "unknown"))
+        if result.get("status_message"):
+            print(result["status_message"])
         if result.get("status") == "needs_input":
             print(
                 "Could not complete required details:",
                 json.dumps(result.get("missing_details", []), indent=2),
             )
-        else:
+        if result.get("research_coverage"):
+            coverage = result["research_coverage"]
+            print(f"Research: {coverage['completed']} usable / {coverage['expected']} expected")
+        if result.get("plan_attempts"):
             print("Planning attempts:", result.get("plan_attempts", 0))
             print("Validation issues:", json.dumps(result.get("issues", []), indent=2))
+        if result.get("research_warnings"):
+            print("Research limitations:")
+            for warning in result["research_warnings"]:
+                print(f"- {warning}")
+        if result.get("status") == "invalid":
+            print("The itinerary draft failed validation.")
+        elif result.get("structured_plan") is not None:
             print(
                 "\nFinal itinerary:\n",
-                json.dumps(result.get("structured_plan"), indent=2),
+                json.dumps(result["structured_plan"], indent=2, ensure_ascii=False),
             )
+        elif result.get("status") in {"research_complete", "partial"}:
+            for record in result.get("research_results", []):
+                if record.get("status") == "completed":
+                    print(f"\n{record['destination']} - {record['agent']}")
+                    print(json.dumps(record["result"], indent=2, ensure_ascii=False))
 
 if __name__ == "__main__":
     asyncio.run(main())

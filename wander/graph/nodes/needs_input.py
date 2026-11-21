@@ -1,7 +1,5 @@
 from ..schemas import TripState
 
 
-def needs_input(state: TripState) -> dict[str, str]:
-    if state.get("research_coverage"):
-        return {"status": "research_failed"}
-    return {"status": "needs_input"}
+def needs_input(_state: TripState) -> dict[str, str]:
+    return {"status": "needs_input", "status_message": "Clarification limit reached. The listed details are still required."}

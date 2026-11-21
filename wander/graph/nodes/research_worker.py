@@ -1,15 +1,18 @@
 import asyncio
+import json
 import logging
 import random
 from typing import Any
 
 from langgraph.errors import GraphInterrupt
+from langchain_core.messages import AIMessage, ToolMessage
 
 import httpx
 import ollama
 from mcp import MCPError
 
 from ..schemas import ResearchWorkerState
+from ..specialist import distinct_places, tool_places
 from .context import TripNodeContext
 
 
@@ -59,40 +62,77 @@ def _content_text(content: Any) -> str:
     return ""
 
 
-def _extract_response(result: Any) -> tuple[str, str, Any]:
+def _distinct_report(
+    report: dict[str, Any], key: str, live: bool,
+) -> dict[str, Any]:
+    records = distinct_places(report[key])
+    for record in records:
+        if key == "hotels":
+            record["availability_verified"] = False
+            if live:
+                record.update(nightly_price=None, nightly_rate=None, currency=None)
+        elif live:
+            record.update(price=None, estimated_duration_hours=None)
+    limitations = report.get("limitations")
+    return {
+        key: records,
+        "limitations": (
+            [value.strip() for value in limitations if isinstance(value, str) and value.strip()]
+            if isinstance(limitations, list) else []
+        ),
+    }
+
+
+def _extract_response(result: Any, agent: str, live: bool) -> tuple[str, Any, dict[str, Any]]:
     if isinstance(result, dict):
         explicit_status = result.get("status")
         if explicit_status == "no_data":
-            return "no_data", "", result
+            return "no_data", None, {}
 
         messages = result.get("messages")
         if isinstance(messages, list) and messages:
+            tool_messages = [message for message in messages if isinstance(message, ToolMessage)]
+            successful = [message for message in tool_messages if message.status != "error"]
+            counts = [len(places) for message in successful if (places := tool_places(message)) is not None]
+            metadata = {
+                "tool_messages": len(tool_messages),
+                "tool_errors": len(tool_messages) - len(successful),
+                "places_returned": sum(counts) if counts else None,
+            }
+            if tool_messages and not successful:
+                return "failed", None, metadata
+            if len(counts) == len(successful) and counts and not any(counts):
+                return "no_data", None, {**metadata, "summarized_places": 0}
+
             last = messages[-1]
+            if isinstance(last, ToolMessage):
+                return "no_data", None, {**metadata, "summarized_places": 0}
             content = getattr(last, "content", None)
             if content is None and isinstance(last, dict):
                 content = last.get("content")
             text = _content_text(content)
             if text:
-                tool_metadata = [
-                    message for message in messages
-                    if getattr(message, "type", None) == "tool"
-                    or isinstance(message, dict) and message.get("type") == "tool"
-                ]
-                return "completed", text, {"tool_messages": len(tool_metadata)}
+                if text.startswith("{"):
+                    try:
+                        report = json.loads(text)
+                    except json.JSONDecodeError:
+                        report = None
+                    key = "attractions" if agent == "activities" else "hotels"
+                    if isinstance(report, dict) and isinstance(report.get(key), list):
+                        summary = _distinct_report(report, key, live)
+                        count = len(summary[key])
+                        status = "completed" if count else "no_data"
+                        return status, summary, {**metadata, "summarized_places": count}
+                return "completed", text, metadata
 
         text = _content_text(result.get("result"))
         if text:
-            return "completed", text, None
-        if result == {} or result is None:
-            return "no_data", "", result
-        return "no_data", "", result
-
-    if isinstance(result, (list, tuple)) and not result:
-        return "no_data", "", result
+            return "completed", text, {}
+        return "no_data", None, {}
     text = _content_text(result)
     if text:
-        return "completed", text, None
-    return "no_data", "", result
+        return "completed", text, {}
+    return "no_data", None, {}
 
 
 def create_research_worker_node(context: TripNodeContext):
@@ -105,8 +145,10 @@ def create_research_worker_node(context: TripNodeContext):
 
         if agent_name == "activities":
             graph = context.activities_graph
+            tool_name = state.get("tool_name", "search_attractions")
         elif agent_name == "accommodation":
             graph = context.accommodation_graph
+            tool_name = state.get("tool_name", "search_hotels")
         else:
             return {
                 "research_results": [{
@@ -125,10 +167,12 @@ def create_research_worker_node(context: TripNodeContext):
                 "role": "user",
                 "content": (
                     f"{state['task']}\n\n"
-                    "Research arguments:\n"
-                    f"{state['arguments']}"
+                    f"Validated search arguments: {json.dumps(state['arguments'])}\n"
+                    f"Use the relevant preferences from this request: {state.get('user_request', '')}"
                 ),
-            }]
+            }, AIMessage(content="", tool_calls=[{
+                "name": tool_name, "args": state["arguments"], "id": job_id,
+            }])],
         }
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -137,23 +181,35 @@ def create_research_worker_node(context: TripNodeContext):
                 job_id, agent_name, destination, attempt, MAX_ATTEMPTS,
             )
             try:
+                logger.debug("Research tool job=%s tool=%s arguments=%s",
+                             job_id, tool_name, state["arguments"])
                 result = await graph.ainvoke(input_state)
-                status, text, metadata = _extract_response(result)
+                status, summary, metadata = _extract_response(
+                    result, agent_name, getattr(context, "live_providers", False),
+                )
                 outcome = {
                     "job_id": job_id,
                     "agent": agent_name,
                     "destination": destination,
                     "status": status,
-                    "result": text if status == "completed" else None,
-                    "error": None,
+                    "result": summary if status == "completed" else None,
+                    "error": "The MCP tool reported an error." if status == "failed" else None,
                     "attempts": attempt,
                 }
-                if metadata is not None:
+                if metadata:
                     outcome["metadata"] = metadata
+                logger.info("Research finished job=%s destination=%s status=%s", job_id, destination, status)
+                logger.debug(
+                    "Research tool outcome job=%s tool=%s reported_errors=%s returned=%s summarized=%s",
+                    job_id, tool_name, metadata.get("tool_errors"), metadata.get("places_returned"),
+                    metadata.get("summarized_places"),
+                )
                 return {"research_results": [outcome]}
             except (GraphInterrupt, asyncio.CancelledError):
                 raise
             except Exception as exc:
+                logger.info("Research attempt failed job=%s destination=%s error_type=%s",
+                            job_id, destination, type(exc).__name__)
                 if not _is_retryable(exc):
                     return {
                         "research_results": [{
