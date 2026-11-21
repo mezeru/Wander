@@ -42,7 +42,7 @@ class TripIntent(BaseModel):
 
 class ValidationResult(BaseModel):
     issues: list[str] = Field(default_factory=list)
-    status: Literal["verified", "needs_revision"]
+    status: Literal["verified", "needs_revision", "partial", "invalid"]
 
 
 class ResearchWorkerState(TypedDict):
@@ -62,11 +62,12 @@ class TripState(TypedDict):
     missing_details: NotRequired[list[dict[str, str]]]
     input_errors: NotRequired[list[dict[str, str]]]
     clarification_rounds: NotRequired[int]
-    final_plan: NotRequired[str]
+    structured_plan: dict[str,Any] | None
     plan_attempts: NotRequired[int]
     issues: NotRequired[list[str]]
+    research_warnings: NotRequired[list[str]]
     status: NotRequired[
-        Literal["pending", "needs_input", "verified", "needs_revision", "ready_for_dispatch", "partial", "research_failed"]
+        Literal["pending", "needs_input", "verified", "needs_revision", "invalid", "ready_for_dispatch", "partial", "research_failed"]
     ]
     research_results: Annotated[list[dict[str, Any]], operator.add]
     trip_intent: TripIntent
@@ -83,3 +84,23 @@ class ResearchJob(BaseModel):
     tool_name: str
     task: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+class PlannedActivity(BaseModel):
+    name: str
+    evidence_job_id: str
+    notes: str | None = None
+
+
+class ItineraryDay(BaseModel):
+    day_number: int
+    destination: str
+    activities: list[PlannedActivity] = Field(default_factory=list)
+    accommodation: str | None = None
+    accommodation_evidence_job_id: str | None = None
+    transfer_notes: str | None = None
+
+
+class TripItinerary(BaseModel):
+    title: str
+    days: list[ItineraryDay]
+    warnings: list[str] = Field(default_factory=list)

@@ -58,6 +58,66 @@ contents.
 - `get_destination_info(destination)`
 - `get_travel_times(origin, destination, transport_mode)`
 
+## Travel research providers
+
+The MCP tools keep their existing argument schemas and return lists of records.
+Select the data source with `TRAVEL_DATA_PROVIDER`:
+
+- `mock` uses the bundled local destination data and needs no API keys.
+- `live` uses OpenTripMap for attractions and Geoapify for accommodations. A
+  missing key or provider failure is reported; live mode never falls back to
+  mock data. When unset, the provider defaults to `mock` to preserve offline
+  development behavior.
+
+Copy the example configuration, then add your own keys:
+
+```powershell
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+Obtain API keys from [OpenTripMap](https://dev.opentripmap.org/) and
+[Geoapify](https://myprojects.geoapify.com/), then fill in the key values in
+`.env`. If `.env` already exists, preserve its contents and add the
+missing variables. Set `TRAVEL_DATA_PROVIDER=live` and start the MCP server:
+
+```powershell
+python -m wander.mcp_server
+```
+
+Example tool inputs retain their existing signatures:
+
+```text
+search_attractions(destination="Tokyo")
+search_hotels(destination="Kyoto", check_in="2026-04-10",
+              check_out="2026-04-13", budget=200)
+```
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `TRAVEL_API_MAX_RESULTS` | 20 | Maximum number of results returned per search. |
+| `TRAVEL_SEARCH_RADIUS_METERS` | 10000 | Initial radius from the resolved city center. |
+| `TRAVEL_FALLBACK_RADIUS_METERS` | 15000 | Radius for a wider search when results are sparse. A larger initial radius takes precedence. |
+| `TRAVEL_SEARCH_CANDIDATE_MULTIPLIER` | 12 | Candidates requested per final result, capped at 500 per discovery request. |
+| `TRAVEL_OPENTRIPMAP_MIN_RATE` | 2 | Initial OpenTripMap popularity threshold. Accepted values are `1`, `2`, and `3`. |
+| `TRAVEL_OPENTRIPMAP_MIN_SPACING_METERS` | 250 | Preferred spacing between attractions. Use `0` to disable the preference. |
+
+OpenTripMap keeps requested interests on every pass. It widens the radius and
+then tries the provider's minimum rating of `1` when needed. When a full batch
+falls well short of the search radius, it searches up to four additional areas
+inside that radius. It ranks named places using provider rating and tourist
+metadata, and prefers separated locations when the candidate pool allows.
+Requests are paced within each server process. Entrance fees, visit durations,
+and current opening hours may be unavailable. See the [OpenTripMap radius example](https://dev.opentripmap.org/examples).
+
+Geoapify starts with hotels, hostels, and guesthouses. One fallback can widen
+the circle and include other accommodation types. Dates and budget are returned
+as user constraints. The Places API provides property locations, and room prices
+and availability remain unverified. See the [Geoapify Places API documentation](https://apidocs.geoapify.com/docs/places/).
+
+Both searches use circles around the provider's city center, so coverage varies
+with city size and provider data. Discovery counts and fallback decisions appear
+in server logs on stderr. Provider usage limits and attribution requirements apply.
+
 ## MCP resources
 
 The server also exposes destination guide resources such as:

@@ -7,7 +7,7 @@ from langgraph.errors import GraphInterrupt
 
 import httpx
 import ollama
-from mcp.shared.exceptions import McpError
+from mcp import MCPError
 
 from ..schemas import ResearchWorkerState
 from .context import TripNodeContext
@@ -34,7 +34,7 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, ollama.ResponseError):
         status = getattr(exc, "status_code", None)
         return status == 408 or status == 429 or (isinstance(status, int) and status >= 500)
-    if isinstance(exc, McpError):
+    if isinstance(exc, MCPError):
         code = getattr(exc, "error", None)
         code = getattr(code, "code", None) if code is not None else getattr(exc, "code", None)
         if code in {-32600, -32601, -32602}:

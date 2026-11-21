@@ -9,18 +9,19 @@ description = "Travel planning MCP server and agent starter for the Wander multi
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "mcp<2",
+  "mcp>=2,<3",
   "pydantic>=2.7",
   "langgraph",
   "langchain",
   "langchain-ollama",
   "langchain-mcp-adapters",
   "python-dotenv",
+  "httpx>=0.27",
   "jsonschema",
 ]
 
 [tool.setuptools]
-packages = ["wander", "wander.graph", "wander.graph.nodes", "wander.data"]
+packages = ["wander", "wander.graph", "wander.graph.nodes", "wander.data", "wander.providers"]
 
 [tool.setuptools.package-dir]
 "" = "."

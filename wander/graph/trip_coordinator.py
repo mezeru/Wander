@@ -128,7 +128,6 @@ async def main() -> None:
     load_dotenv()
     model = ChatOllama(model=MODEL_NAME, temperature=0)
     coordinator_model = model.with_structured_output(ResearchTasks)
-    validator_model = model.with_structured_output(ValidationResult)
     intent_model = model.with_structured_output(TripIntent, method="json_schema")
 
     callbacks: list[Any] = []
@@ -173,7 +172,7 @@ async def main() -> None:
         node_context = TripNodeContext(
             model=model,
             coordinator_model=coordinator_model,
-            validator_model=validator_model,
+            validator_model=None,
             intent_model=intent_model,
             schemas=schemas,
             tool_specs=tool_specs,
@@ -242,8 +241,8 @@ async def main() -> None:
             print("Planning attempts:", result.get("plan_attempts", 0))
             print("Validation issues:", json.dumps(result.get("issues", []), indent=2))
             print(
-                "\nFinal itinerary (mock research):\n",
-                result.get("final_plan", "No plan generated."),
+                "\nFinal itinerary:\n",
+                json.dumps(result.get("structured_plan"), indent=2),
             )
 
 if __name__ == "__main__":

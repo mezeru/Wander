@@ -92,17 +92,24 @@ def route_research_completeness(state: TripState) -> str:
 
 
 def route_review(state: TripState) -> str:
-    if state.get("status") == "partial":
-        logger.info("Workflow route: validate_final -> END (partial research)")
-        return "__end__"
-    if state.get("status") == "verified" and not state.get("issues"):
-        logger.info("Workflow route: validate_final -> END (verified)")
-        return "__end__"
-    if state.get("plan_attempts", 0) < MAX_PLAN_ATTEMPTS:
+    if state.get("issues"):
+        if state.get("plan_attempts", 0) < MAX_PLAN_ATTEMPTS:
+            logger.info(
+                "Workflow route: validate_final -> final_planner "
+                "(correctable issues remain)"
+            )
+            return "review_again"
         logger.info(
-            "Workflow route: validate_final -> final_planner "
-            "(revision required)"
+            "Workflow route: validate_final -> END "
+            "(attempt limit reached with unresolved issues)"
         )
-        return "review_again"
-    logger.info("Workflow route: validate_final -> END (attempt limit reached)")
+        return "__end__"
+    if state.get("status") in ("verified", "partial"):
+        logger.info(
+            "Workflow route: validate_final -> END (verified)"
+            if state.get("status") == "verified"
+            else "Workflow route: validate_final -> END (partial research)"
+        )
+        return "__end__"
+    logger.info("Workflow route: validate_final -> END")
     return "__end__"

@@ -1,26 +1,53 @@
 from __future__ import annotations
 
 import json
+import logging
+from pathlib import Path
+import sys
 from typing import Any
 
-from wander.travel_data import (
-    get_destination_info,
-    get_travel_times,
-    search_hotels,
-    get_attractions
-)
+from dotenv import load_dotenv
 
-from mcp.server.mcpserver import MCPServer
-mcp = MCPServer("destination")
+from mcp.server import MCPServer
+
+from wander.providers.config import travel_settings
+from wander.providers.geoapify import search_hotels as search_hotels_live
+from wander.providers.opentripmap import search_attractions as search_attractions_live
+from wander.travel_data import get_attractions, get_destination_info, search_hotels
+
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+logger = logging.getLogger(__name__)
+mcp = MCPServer(name="destination")
 
 
 @mcp.tool()
-def search_attractions(destination: str,
-  interests: list[str] | None = None,
-  limit: int = 5) -> list[dict[str, Any]]:
+async def search_attractions(
+    destination: str,
+    interests: list[str] | None = None,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    settings = travel_settings()
+    if settings.provider == "live":
+        return await search_attractions_live(destination, interests, limit)
 
-    attractions = get_attractions(destination=destination, interests=interests, limit=limit)
-    return attractions
+    attractions = get_attractions(
+        destination=destination,
+        interests=interests,
+        limit=limit,
+    )
+    return [
+        {
+            **item,
+            "destination": destination,
+            "provider": "mock",
+            "source": "mock",
+            "data_provider": "mock",
+            "verified_live": False,
+        }
+        for item in attractions
+    ]
 
 
 @mcp.resource('travel://guides/{destination}')
@@ -29,16 +56,37 @@ def destination_guide(destination: str) -> dict[str, Any]:
     return json.dumps(info, indent=2)
 
 @mcp.tool(name="search_hotels")
-def search_hotels_tool(
+async def search_hotels_tool(
     destination: str,
     check_in: str,
     check_out: str,
     budget: float,
     limit: int = 5
 ) -> list[dict[str, Any]]:
-    return search_hotels(
-        destination, check_in, check_out, budget, limit
-    )
+    settings = travel_settings()
+    if settings.provider == "live":
+        return await search_hotels_live(
+            destination,
+            check_in,
+            check_out,
+            budget,
+            limit,
+        )
+
+    hotels = search_hotels(destination, check_in, check_out, budget, limit)
+    return [
+        {
+            **item,
+            "destination": destination,
+            "provider": "mock",
+            "source": "mock",
+            "data_provider": "mock",
+            "pricing_available": True,
+            "availability_verified": False,
+            "date_availability_checked": False,
+        }
+        for item in hotels
+    ]
 
 @mcp.prompt()
 def trip_planning_prompt(
@@ -72,4 +120,9 @@ def trip_planning_prompt(
     
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     mcp.run(transport="stdio")
