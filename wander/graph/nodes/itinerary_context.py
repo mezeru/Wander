@@ -1,27 +1,11 @@
+from datetime import date, timedelta
 from typing import Any
 
 from ..schemas import TripIntent, TripState
-
+from ..validation import validated_destinations
+from .requirements_check import hotel_day_minimums
 
 _RESEARCH_CATEGORIES = ("activities", "accommodation")
-
-
-def _validated_destinations(destinations: Any) -> list[str]:
-    if not isinstance(destinations, list) or not destinations:
-        raise ValueError("At least one destination is required.")
-
-    normalized: set[str] = set()
-    for destination in destinations:
-        if not isinstance(destination, str) or not destination.strip():
-            raise ValueError("Destinations must be non-empty strings.")
-        key = destination.strip().casefold()
-        if key in normalized:
-            raise ValueError(
-                "Duplicate destinations are not supported; destination names "
-                "must be unique ignoring case and surrounding whitespace."
-            )
-        normalized.add(key)
-    return destinations
 
 
 def _trip_intent_data(state: TripState) -> dict[str, Any]:
@@ -37,7 +21,7 @@ def allocate_days(
     destinations: list[str],
     total_days: int,
 ) -> dict[str, int]:
-    ordered_destinations = _validated_destinations(destinations)
+    ordered_destinations = validated_destinations(destinations)
     if isinstance(total_days, bool) or not isinstance(total_days, int) or total_days <= 0:
         raise ValueError("Trip length must be a positive integer number of days.")
     if total_days < len(ordered_destinations):
@@ -56,7 +40,7 @@ def _group_research(
     state: TripState,
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     trip_intent = _trip_intent_data(state)
-    destinations = _validated_destinations(trip_intent.get("destinations"))
+    destinations = validated_destinations(trip_intent.get("destinations"))
     grouped: dict[str, dict[str, list[dict[str, Any]]]] = {
         destination: {category: [] for category in _RESEARCH_CATEGORIES}
         for destination in destinations
@@ -200,14 +184,46 @@ def group_research_by_destination(
 
 def prepare_itinerary_context(state: TripState) -> dict[str, Any]:
     trip_intent = _trip_intent_data(state)
-    destinations = _validated_destinations(trip_intent.get("destinations"))
+    destinations = validated_destinations(trip_intent.get("destinations"))
     total_days = trip_intent.get("trip_days")
     allocation = allocate_days(destinations, total_days)
+    jobs = state.get("validated_jobs", [])
+    minimums = hotel_day_minimums(jobs)
+    complete_stays = (
+        minimums.keys() == allocation.keys()
+        and sum(minimums.values()) <= total_days
+        and all(days > 0 for days in minimums.values())
+    )
+    if complete_stays:
+        remaining = total_days - sum(minimums.values())
+        allocation = {destination: minimums[destination] for destination in destinations}
+        allocation[destinations[-1]] += remaining
+
+    ordered_days = [destination for destination in destinations for _ in range(allocation[destination])]
+    slots = [
+        {"day_number": number, "destination": destination}
+        for number, destination in enumerate(ordered_days, start=1)
+    ]
+    lodging = [
+        {"job_id": job["job_id"], **job["arguments"]}
+        for job in jobs if job.get("tool_name") == "search_hotels"
+    ]
+    if complete_stays:
+        stays = {stay["destination"]: stay for stay in lodging}
+        start = date.fromisoformat(stays[destinations[0]]["check_in"])
+        for offset, slot in enumerate(slots):
+            calendar_day = (start + timedelta(days=offset)).isoformat()
+            stay = stays[slot["destination"]]
+            slot.update(
+                date=calendar_day,
+                lodging_night=stay["check_in"] <= calendar_day < stay["check_out"],
+            )
     research_by_destination, destination_coverage, evidence_issues = _group_research(
         state
     )
 
     research_coverage = state.get("research_coverage", {})
+
     if not isinstance(research_coverage, dict):
         research_coverage = {}
     research_coverage = dict(research_coverage)
@@ -218,6 +234,8 @@ def prepare_itinerary_context(state: TripState) -> dict[str, Any]:
             "destinations": destinations,
             "total_days": total_days,
             "day_allocation": allocation,
+            "day_slots": slots,
+            "lodging_constraints": lodging,
             "research_by_destination": research_by_destination,
             "research_coverage": research_coverage,
         }

@@ -1,6 +1,43 @@
+import logging
 from typing import Any
 
 from ..schemas import TripState
+
+
+logger = logging.getLogger(__name__)
+
+
+def execution_warnings(coverage: dict[str, Any]) -> list[str]:
+    return [
+        message.format(job_id)
+        for kind, message in {
+            "failed": "Research job '{}' failed; evidence is unavailable.",
+            "no_data": "Research job '{}' returned no usable places.",
+            "missing": "Research result for job '{}' is missing.",
+            "duplicate": "Duplicate research results for job '{}' cannot establish evidence.",
+            "unknown": "Unknown or malformed research result '{}' is not authoritative.",
+        }.items()
+        for job_id in coverage.get(kind, [])
+    ]
+
+
+def lodging_limitations(records: list[dict[str, Any]], destination: str) -> list[str]:
+    warnings = []
+    unknown_prices = sum(
+        "nightly_price" in hotel and hotel["nightly_price"] is None
+        and hotel.get("nightly_rate") is None
+        for hotel in records
+    )
+    if unknown_prices:
+        scope = "all" if unknown_prices == len(records) else "some"
+        warnings.append(f"{destination} lodging: nightly prices and budget fit are unknown for {scope} candidates.")
+    if any(hotel.get("availability_verified") is False for hotel in records):
+        warnings.append(f"{destination} lodging: room availability was not verified.")
+    if any(hotel.get("provider") == "mock" and (
+        hotel.get("nightly_price") is not None or hotel.get("nightly_rate") is not None
+    ) for hotel in records):
+        warnings.append(f"{destination} lodging: sample prices are illustrative.")
+    return warnings
 
 
 def create_check_research_completeness_node(_context=None):
@@ -64,12 +101,28 @@ def create_check_research_completeness_node(_context=None):
         coverage = {
             "expected": len(expected_set),
             "completed": len(unique_completed),
+            "finished": len(expected_set & seen),
             "failed": unique_failed,
             "no_data": unique_no_data,
             "missing": missing,
             "duplicate": sorted(set(duplicate)),
             "unknown": sorted(set(unknown)),
         }
-        return {"research_coverage": coverage}
+        logger.info(
+            "Research batch: finished=%d/%d usable=%d failed=%d no_data=%d",
+            coverage["finished"], coverage["expected"], coverage["completed"],
+            len(unique_failed), len(unique_no_data),
+        )
+        warnings = execution_warnings(coverage)
+        updates = {"research_coverage": coverage, "research_warnings": warnings}
+        if not (coverage["completed"] or coverage["no_data"]):
+            updates.update(status="research_failed", status_message="No research job produced usable evidence.")
+        elif state.get("trip_intent", {}).get("requires_itinerary") is False:
+            for result in state.get("research_results", []):
+                report = result.get("result") if isinstance(result, dict) else None
+                if isinstance(report, dict) and isinstance(report.get("hotels"), list):
+                    warnings.extend(lodging_limitations(report["hotels"], result["destination"]))
+            updates["status"] = "partial" if warnings else "research_complete"
+        return updates
 
     return check_research_completeness

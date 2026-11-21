@@ -36,10 +36,24 @@ Run these commands from the project root (the directory containing `pyproject.to
 
 ## Workflow logging
 
+Run the trip planner from the project root with `python -m wander.graph.trip_coordinator`.
+A blank request selects the Kyoto demo. A trip plan asks for missing destinations
+or total days before dispatching research. Attraction and lodging lookups return
+research directly, and lodging lookups still ask for any tool-required dates
+or nightly budget.
+
+When every requested stop has a validated lodging stay, the itinerary calendar
+starts at the first check-in. A transfer date belongs to the next stop, and extra
+itinerary days go to the final stop. Only dates from check-in through the night
+before check-out are lodging nights. The requested duration and hotel dates stay
+independent, and incompatible dates or duration trigger clarification.
+
 The trip planner emits INFO logs for node start/completion (including elapsed time),
-node failures, and conditional route choices across the coordinator and specialist
-graphs. Logs include node and route names but omit user requests and model/tool
-contents.
+route choices, worker outcomes, and validation issues. Use `WANDER_DEBUG=1` for
+local development to log the exact request, extracted intent, validated tool
+arguments, and returned and summarized place counts. Leave it off when logs
+could contain personal travel details. A partial itinerary lists research
+limitations separately from correctable planning issues.
 
 ## Graph code layout
 

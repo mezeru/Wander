@@ -98,6 +98,23 @@ def test_invalid_and_reversed_dates_report_job_specific_errors():
     assert ("accommodation-0", "check_out") in fields
 
 
+def test_overlapping_hotel_ranges_ask_for_later_check_in_only():
+    jobs = [
+        {"job_id": "accommodation-0", "destination": "Kyoto", "tool_name": "search_hotels",
+         "arguments": {"destination": "Kyoto", "budget": 150,
+                       "check_in": "2027-04-10", "check_out": "2027-04-13"}},
+        {"job_id": "accommodation-1", "destination": "Tokyo", "tool_name": "search_hotels",
+         "arguments": {"destination": "Tokyo", "budget": 150,
+                       "check_in": "2027-04-12", "check_out": "2027-04-15"}},
+    ]
+    result = check(jobs)
+    assert [(item["job_id"], item["field"]) for item in result["missing_details"]] == [
+        ("accommodation-1", "check_in"),
+    ]
+    same_day_transfer = check(jobs, {"accommodation-1": {"check_in": "2027-04-13"}})
+    assert same_day_transfer["missing_details"] == []
+
+
 def test_invalid_date_format_and_partial_corrections():
     job = {"job_id": "accommodation-0", "destination": "Tokyo",
            "tool_name": "search_hotels",
@@ -123,7 +140,7 @@ def test_unknown_tool_and_empty_jobs():
     assert route_requirements({
         "research_jobs": [],
         "missing_details": [],
-    }) == "needs_input"
+    }) == "__end__"
 
 
 def test_no_dispatch_with_unresolved_fields():

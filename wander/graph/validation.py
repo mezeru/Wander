@@ -37,6 +37,8 @@ def parse_number(value: Any, *, integer: bool, field: str) -> int | float:
     if isinstance(value, bool):
         raise ValueError("Enter a number, not a boolean.")
     if isinstance(value, (int, float)):
+        if integer and isinstance(value, float) and (field == "trip_days" or not value.is_integer()):
+            raise ValueError("Enter a whole number (e.g. 5).")
         number = value
     elif isinstance(value, str):
         text = value.strip()
@@ -62,7 +64,7 @@ def parse_number(value: Any, *, integer: bool, field: str) -> int | float:
         raise ValueError("Enter a numeric value.")
     if not integer and not float("-inf") < float(number) < float("inf"):
         raise ValueError("Enter a finite number.")
-    if field in {"budget", "nightly_rate", "price", "limit"} and number <= 0:
+    if field in {"budget", "nightly_rate", "price", "limit", "trip_days"} and number <= 0:
         raise ValueError("This value must be greater than zero.")
     return int(number) if integer else float(number)
 
@@ -116,13 +118,33 @@ def explicit_nightly_budget(text: str) -> float | None:
     patterns = (
         r"(?:nightly(?:\s+hotel)?\s+budget|hotel\s+budget\s+per\s+night|nightly\s+(?:hotel\s+)?limit)\s*(?:of|is|:)?\s*(\$?\s*[\d,]+(?:\.\d+)?)",
         r"(?:hotel|room)\s+(?:budget|limit|rate)\s*(?:of|is|:)?\s*(\$?\s*[\d,]+(?:\.\d+)?)\s*(?:per\s+night|/\s*night)",
-        r"(\$?\s*[\d,]+(?:\.\d+)?)\s*(?:per\s+night|/\s*night)\s*(?:hotel|room)?",
+        r"(?<![\w.,€£¥+-])(\$?[\d,]+(?:\.\d+)?)\s*(?:per\s+night|/\s*night)\b",
     )
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            return float(parse_number(match.group(1), integer=False, field="budget"))
+            prefix = text[max(0, match.start(1) - 5):match.start(1)]
+            if re.search(r"(?:[€£¥]|\b(?:EUR|GBP|JPY|INR|CAD|AUD))\s*$", prefix, re.I):
+                continue
+            try:
+                return float(parse_number(match.group(1), integer=False, field="budget"))
+            except ValueError:
+                continue
     return None
+
+
+def validated_destinations(destinations: Any) -> list[str]:
+    if not isinstance(destinations, list) or not destinations:
+        raise ValueError("At least one destination is required.")
+    normalized: set[str] = set()
+    for destination in destinations:
+        if not isinstance(destination, str) or not destination.strip():
+            raise ValueError("Destinations must be non-empty strings.")
+        key = destination.strip().casefold()
+        if key in normalized:
+            raise ValueError("Duplicate destinations are not supported.")
+        normalized.add(key)
+    return destinations
 
 
 def issue(tool: str, field: str, description: str) -> dict[str, str]:

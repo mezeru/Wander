@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,7 @@ from wander.graph.nodes.itinerary_context import (
     prepare_itinerary_context,
 )
 from wander.graph.nodes.context import TripNodeContext
-from wander.graph.schemas import ResearchTasks, TripIntent, ValidationResult
+from wander.graph.schemas import TripIntent, TripItinerary
 from wander.graph.trip_coordinator import build_workflow
 
 
@@ -236,29 +237,42 @@ class FakeModel:
         return self.response
 
 
+class FakePlanner:
+    def __init__(self):
+        self.calls = 0
+
+    def with_structured_output(self, schema, **_kwargs):
+        assert schema["title"] == "TripItinerary"
+        return self
+
+    async def ainvoke(self, messages):
+        self.calls += 1
+        planning = json.loads(messages[1].content.split("research:\n", 1)[1])
+        destinations = [
+            destination for destination in planning["destinations"]
+            for _ in range(planning["day_allocation"][destination])
+        ]
+        return TripItinerary(title="A plan", days=[
+            {"destination": destination, "day_number": number}
+            for number, destination in enumerate(destinations, start=1)
+        ])
+
+
 class FakeResearchGraph:
     def __init__(self, failure_destination=None):
         self.failure_destination = failure_destination
 
     async def ainvoke(self, state):
         request = state["messages"][0]["content"]
-        if self.failure_destination == "*" or (
-            self.failure_destination and self.failure_destination in request
-        ):
+        destination = state["messages"][1].tool_calls[0]["args"]["destination"]
+        if self.failure_destination in {"*", destination}:
             raise ValueError("unavailable")
         return {"messages": [SimpleNamespace(content=f"Research: {request}", type="ai")]}
 
 
 def _workflow_context(failure_destination=None):
     return TripNodeContext(
-        model=FakeModel(SimpleNamespace(content="A plan")),
-        coordinator_model=FakeModel(
-            ResearchTasks(
-                activities_task="Research activities",
-                accommodation_task=None,
-            )
-        ),
-        validator_model=FakeModel(ValidationResult(issues=[], status="verified")),
+        model=FakePlanner(),
         intent_model=FakeModel(
             TripIntent(
                 destinations=["Tokyo", "Kyoto", "Osaka"],
@@ -279,7 +293,6 @@ def _workflow_context(failure_destination=None):
                 "required": ["destination"],
             },
         },
-        tool_specs=[],
         activities_graph=FakeResearchGraph(failure_destination),
         accommodation_graph=FakeResearchGraph(),
     )
