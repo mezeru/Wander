@@ -1,9 +1,13 @@
 import json
+import logging
 from typing import Any
 from pydantic import ValidationError
 
 from ..schemas import TripItinerary, TripState
 from .context import TripNodeContext
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_name(value: Any) -> str:
@@ -442,6 +446,14 @@ def create_validate_final_node(_context: TripNodeContext):
         plan, issues = validate_structure(state)
         if plan is None:
             status = determine_validation_status(issues, [])
+            logger.info(
+                "Final itinerary validation attempt=%s status=%s correctable_issues=%s "
+                "research_limitations=%s",
+                state.get("plan_attempts", 0),
+                status,
+                issues,
+                [],
+            )
             return {"issues": sorted(set(issues)), "research_warnings": [], "status": status}
 
         itinerary_context = state.get("itinerary_context")
@@ -454,9 +466,20 @@ def create_validate_final_node(_context: TripNodeContext):
         evidence_issues, evidence_warnings = validate_evidence_references(state, plan)
         issues.extend(evidence_issues)
         research_warnings = collect_research_warnings(state, evidence_warnings)
+        research_warnings.extend(
+            warning for warning in plan.warnings if warning.strip()
+        )
         issues = sorted(set(issues))
         research_warnings = sorted(set(research_warnings))
         status = determine_validation_status(issues, research_warnings)
+        logger.info(
+            "Final itinerary validation attempt=%s status=%s correctable_issues=%s "
+            "research_limitations=%s",
+            state.get("plan_attempts", 0),
+            status,
+            issues,
+            research_warnings,
+        )
         return {
             "issues": issues,
             "research_warnings": research_warnings,

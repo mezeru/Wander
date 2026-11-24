@@ -40,23 +40,23 @@ def dispatch_research(state: TripState) -> list[Send]:
 
 def route_requirements(state: TripState) -> str:
     research_jobs = state.get("research_jobs", [])
+    if state.get("missing_details"):
+        if state.get("clarification_rounds", 0) >= MAX_CLARIFICATION_ROUNDS:
+            logger.info(
+                "Workflow route: requirements_check -> needs_input "
+                "(clarification limit reached)"
+            )
+            return "needs_input"
+        logger.info("Workflow route: requirements_check -> ask_user")
+        return "ask_user"
     if not research_jobs:
         logger.info(
             "Workflow route: requirements_check -> needs_input "
             "(no research jobs generated)"
         )
         return "needs_input"
-    if not state.get("missing_details"):
-        logger.info("Workflow route: requirements_check -> ready_for_dispatch")
-        return "ready_for_dispatch"
-    if state.get("clarification_rounds", 0) >= MAX_CLARIFICATION_ROUNDS:
-        logger.info(
-            "Workflow route: requirements_check -> needs_input "
-            "(clarification limit reached)"
-        )
-        return "needs_input"
-    logger.info("Workflow route: requirements_check -> ask_user")
-    return "ask_user"
+    logger.info("Workflow route: requirements_check -> ready_for_dispatch")
+    return "ready_for_dispatch"
 
 
 def route_research_completeness(state: TripState) -> str:
@@ -70,6 +70,16 @@ def route_research_completeness(state: TripState) -> str:
         logger.info(
             "Workflow route: check_research_completeness -> needs_input "
             "(no usable research)"
+        )
+        return "needs_input"
+    trip_intent = state.get("trip_intent", {})
+    if not isinstance(trip_intent, dict):
+        dump = getattr(trip_intent, "model_dump", None)
+        trip_intent = dump() if callable(dump) else {}
+    if trip_intent.get("needs_activities") is False:
+        logger.info(
+            "Workflow route: check_research_completeness -> needs_input "
+            "(research-only request; no day-by-day itinerary needed)"
         )
         return "needs_input"
     if integrity:

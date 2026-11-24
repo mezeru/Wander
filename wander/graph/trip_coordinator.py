@@ -68,6 +68,19 @@ __all__ = [
 ]
 
 
+DEFAULT_DEMO_REQUEST = (
+    "Plan a 3-day trip to Kyoto, Japan. Include sightseeing attractions and "
+    "accommodation. My nightly hotel budget is $150."
+)
+
+
+def _choose_trip_request(request: str) -> str:
+    if request.strip():
+        return request
+    print("Using the default Kyoto demo request.")
+    return DEFAULT_DEMO_REQUEST
+
+
 
 def tool_schema(tool: Any) -> dict[str, Any]:
     """Read the LangChain schema adapted from MCP discovery."""
@@ -193,10 +206,11 @@ async def main() -> None:
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         )
 
-        request = input("Enter your trip request (blank for Kyoto demo): ").strip()
-        if not request:
-            request = "Plan a 3-day Kyoto trip with a nightly hotel budget of $150."
+        request = _choose_trip_request(
+            input("Enter your trip request (blank for Kyoto demo): ")
+        )
         logger.info("Starting trip workflow")
+        logger.debug("Trip request: %s", request)
         logger.info("Workflow route: START -> extract_trip_intent")
         result = await graph.ainvoke(
             {
@@ -220,8 +234,11 @@ async def main() -> None:
                 job_id = item["job_id"]
                 destination = item.get("destination") or "Unknown destination"
                 field = item["field"]
-                print(f"\n{destination} - {job_id}")
-                print(f"{field}: {item['description']}")
+                if job_id == "__trip__":
+                    print(f"\n{item['description']}")
+                else:
+                    print(f"\n{destination} - {job_id}")
+                    print(f"{field}: {item['description']}")
                 value = input("  Your answer: ").strip()
                 answers.setdefault(job_id, {})[field] = value
             logger.info("Resuming trip workflow after user clarification")
@@ -236,6 +253,11 @@ async def main() -> None:
             print(
                 "Could not complete required details:",
                 json.dumps(result.get("missing_details", []), indent=2),
+            )
+        elif result.get("status") in {"verified", "partial"} and not result.get("structured_plan"):
+            print(
+                "\nResearch results:\n",
+                json.dumps(result.get("research_results", []), indent=2),
             )
         else:
             print("Planning attempts:", result.get("plan_attempts", 0))

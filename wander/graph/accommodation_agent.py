@@ -56,7 +56,10 @@ async def build_accommodation_graph(tools: list):
                     "4. Never invent prices, ratings, amenities, or availability. If information is missing from tool outputs, state so clearly.\n\n"
                     "RESPONSE GUIDELINES:\n"
                     "- Prioritize options that match the user's stated preferences (e.g., pet-friendly, downtown location, pool, breakfast included).\n"
-                    "- Summarize your findings clearly with names, estimated pricing, and key features."
+                    "- List each distinct hotel returned by the tool once, using its actual returned name; do not invent hotels or amenities.\n"
+                    "- Treat missing prices as unknown and never claim a hotel fits the budget without price data.\n"
+                    "- Never claim that date-specific availability was checked unless the tool explicitly verified it.\n"
+                    "- Keep the research concise and useful for itinerary planning; omit conversational filler."
                 )),
                 *state["messages"]
             ])

@@ -38,6 +38,12 @@ def check(jobs, answers=None):
     state = {
         "research_jobs": jobs,
         "job_answers": answers or {},
+        "trip_intent": {
+            "destinations": ["Tokyo"],
+            "trip_days": None,
+            "needs_activities": False,
+            "needs_accommodation": False,
+        },
     }
     return node(state)
 
@@ -119,11 +125,12 @@ def test_unknown_tool_and_empty_jobs():
     assert unknown["missing_details"][0]["field"] == "_tool"
     empty = check([])
     assert empty["validated_jobs"] == []
-    assert empty["missing_details"] == []
+    assert empty["missing_details"][0]["field"] == "research_scope"
     assert route_requirements({
         "research_jobs": [],
-        "missing_details": [],
-    }) == "needs_input"
+        "missing_details": empty["missing_details"],
+        "clarification_rounds": 0,
+    }) == "ask_user"
 
 
 def test_no_dispatch_with_unresolved_fields():

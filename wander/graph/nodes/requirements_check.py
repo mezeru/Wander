@@ -130,6 +130,50 @@ def create_requirements_check_node(context: TripNodeContext):
             validated_job["arguments"] = valid
             validated_jobs.append(validated_job)
 
+        trip_intent = state.get("trip_intent", {})
+        if not isinstance(trip_intent, dict):
+            dump = getattr(trip_intent, "model_dump", None)
+            trip_intent = dump() if callable(dump) else {}
+        destinations = trip_intent.get("destinations")
+        needs_activities = trip_intent.get("needs_activities") is True
+        needs_accommodation = trip_intent.get("needs_accommodation") is True
+        if (needs_activities or needs_accommodation) and not (
+            isinstance(destinations, list)
+            and any(isinstance(item, str) and item.strip() for item in destinations)
+        ):
+            issues.append({
+                "job_id": "__trip__",
+                "destination": "",
+                "tool": "trip_intent",
+                "field": "destination",
+                "description": "Which destination would you like to plan?",
+            })
+
+        trip_days = trip_intent.get("trip_days")
+        if needs_activities and (
+            not isinstance(trip_days, int)
+            or isinstance(trip_days, bool)
+            or trip_days <= 0
+        ):
+            issues.append({
+                "job_id": "__trip__",
+                "destination": "",
+                "tool": "trip_intent",
+                "field": "trip_days",
+                "description": "How many total days would you like to plan?",
+            })
+
+        if not state.get("research_jobs") and not issues:
+            issues.append({
+                "job_id": "__trip__",
+                "destination": "",
+                "tool": "trip_intent",
+                "field": "research_scope",
+                "description": (
+                    "Would you like activities research, accommodation research, or both?"
+                ),
+            })
+
         unique: dict[tuple[str, str], dict[str, str]] = {}
         for item in issues:
             unique[(item["job_id"], item["field"])] = item

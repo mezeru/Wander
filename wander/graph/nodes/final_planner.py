@@ -28,10 +28,16 @@ def create_final_planner_node(context: TripNodeContext):
                     "Follow the requested destination order and initial day allocation. "
                     "Produce exactly one itinerary entry per requested day. "
                     "Choose activities from the appropriate destination's research. "
+                    "Consider all distinct attractions in the available research summaries and "
+                    "distribute them across days where possible. Avoid unnecessary empty "
+                    "sightseeing days when enough researched attractions exist. "
+                    "Never invent attractions to fill the schedule; when research is sparse, "
+                    "leave unsupported activities out and add a clear limitation to warnings. "
                     "Include intercity transfer notes when destinations change, "
                     "but do not invent transport schedules, prices, or journey durations. "
                     "Use evidence_job_id to reference supporting research. "
-                    "Only recommend accommodation supported by accommodation research. "
+                    "Only recommend accommodation supported by accommodation research, and put "
+                    "only the hotel name in accommodation (not evidence IDs or research notes). "
                     "Do not invent hotel names, prices, attractions, or availability. "
                     "Explicitly report missing research and uncertainty. "
                     "All mock research is illustrative, not live-verified."
@@ -41,7 +47,9 @@ def create_final_planner_node(context: TripNodeContext):
                 content=(
                     f"Original request:\n{state['user_request']}\n\n"
                     f"Validated arguments:\n{json.dumps(state.get('tool_arguments', {}))}\n\n"
-                    f"Research results:\n{json.dumps(state.get('research_results', []), indent=2)}"
+                    f"Research results:\n{json.dumps(state.get('research_results', []), indent=2)}\n\n"
+                    f"Research coverage and limitations:\n"
+                    f"{json.dumps(state.get('research_coverage', {}), indent=2)}"
                 )
             ),
         ]

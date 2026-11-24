@@ -59,7 +59,11 @@ async def build_activities_graph(tools: list):
                     "4. Never invent ticket prices, operating hours, or ratings. If information is missing from tool outputs, state so clearly.\n\n"
                     "RESPONSE GUIDELINES:\n"
                     "- Prioritize options matching the user's stated interests (e.g., family-friendly, outdoor adventure, historical, culinary).\n"
-                    "- Present recommendations with clear names, estimated costs or time durations, and why they fit the traveler's goals."
+                    "- Research multiple relevant attractions when the tool returns them; prefer distinct options over a long description of one place.\n"
+                    "- Give a concise shortlist and preserve the actual attraction names returned by the tool.\n"
+                    "- Do not invent attractions or facts. State clearly when the tool returned too few useful results.\n"
+                    "- Avoid an encyclopedia-style response about a single attraction.\n"
+                    "- Do not invent prices, opening hours, or durations; label unavailable details as unknown."
                 )),
                 *state["messages"]
             ])
